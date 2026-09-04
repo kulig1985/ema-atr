@@ -12,7 +12,12 @@ class TelegramClient:
     async def send(self, text: str) -> None:
         response = await self.http.post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
-            json={"chat_id": self.chat_id, "text": text, "disable_web_page_preview": True},
+            json={
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
             timeout=10.0,
         )
         response.raise_for_status()

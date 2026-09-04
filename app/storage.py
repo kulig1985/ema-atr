@@ -105,6 +105,10 @@ class Storage:
     async def latest_signal(self, symbol: str) -> dict[str, Any] | None:
         return await self.db.signals.find_one({"symbol": symbol}, sort=[("signalAt", DESCENDING)])
 
+    async def signals_since(self, since: datetime) -> list[dict[str, Any]]:
+        cursor = self.db.signals.find({"signalAt": {"$gte": since}}).sort("signalAt", DESCENDING)
+        return [document async for document in cursor]
+
     async def mark_stale_active_measurements_interrupted(self) -> int:
         result = await self.db.signals.update_many(
             {"measurementStatus": "ACTIVE"},

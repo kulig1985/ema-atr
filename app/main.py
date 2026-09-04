@@ -29,6 +29,14 @@ from .indicators import (
     wilder_atr,
     wilder_atr_next,
 )
+from .messages import (
+    STATS_WINDOW,
+    format_price,
+    format_signal_message,
+    format_status_message,
+    summarize_signals,
+    waiting_for,
+)
 from .models import Candle, FlowBucket, OutcomeTracker, SymbolRuntime
 from .storage import Storage
 from .symbols import select_symbols
@@ -67,8 +75,40 @@ class ShadowSignalApp:
         self.market_stats = StreamStats("Binance market stream")
         self.public_stats = StreamStats("Binance public stream")
         self.max_loop_lag_sec = 0.0
+        self.started_at = datetime.now(UTC)
+
+    def _log_startup_summary(self) -> None:
+        """Spell out what the process will do, so the log is readable without the docs."""
+        document = self.config.document
+        entry_tf, exit_tf = document["entryTimeframe"], document["exitTimeframe"]
+        digest = self.config.telegram_status_sec
+        logger.info("=" * 72)
+        logger.info("Shadow Signal starting with %d symbol(s): %s", len(self.symbols), ", ".join(self.symbols))
+        logger.info(
+            "Entry band: %s EMA%s +/- %s x ATR%s   |   Exit guideline: %s EMA%s +/- %s x ATR%s",
+            entry_tf, document["emaPeriod"], document["xEntry"], document["atrPeriod"],
+            exit_tf, document["emaPeriod"], document["xExit"], document["atrPeriod"],
+        )
+        logger.info(
+            "A signal needs ALL of: re-entry cross back through the band edge, VWAP alignment, "
+            "CVD direction over %s complete 1m buckets, spread <= %s bps, "
+            "trade/book younger than %ss/%ss",
+            document["cvdLookback"], document["maxSpreadBps"],
+            document["tradeMaxAgeSec"], document["bookMaxAgeSec"],
+        )
+        logger.info(
+            "After a signal: %ss cooldown, 20 min outcome measurement. NO ORDER IS EVER SENT.",
+            document["cooldownSec"],
+        )
+        logger.info(
+            "Log status every %ss | Telegram: signals on, digest %s",
+            self.config.log_status_sec,
+            f"every {digest}s" if digest > 0 else "disabled",
+        )
+        logger.info("=" * 72)
 
     async def bootstrap(self) -> None:
+        self._log_startup_summary()
         interrupted = await self.storage.mark_stale_active_measurements_interrupted()
         if interrupted:
             logger.warning("Marked %d unfinished previous measurements as INTERRUPTED", interrupted)
@@ -475,8 +515,21 @@ class ShadowSignalApp:
         )
         self.outcomes[rt.symbol].append(tracker)
 
-        logger.info("%s %s SIGNAL at %.8f", rt.symbol, side, price)
-        text = self._telegram_text(rt, side, price, exit_guideline, validation)
+        logger.info(
+            "%s %s SIGNAL at %s | band edge %s | vwap %s | cvd slope %+.4f curv %+.4f | "
+            "spread %.2fbps | %s exit guideline %s",
+            rt.symbol,
+            side,
+            format_price(price),
+            format_price(rt.lower_entry if side == "LONG" else rt.upper_entry),
+            format_price(validation["vwap"]),
+            validation["cvdSlope"],
+            validation["cvdCurvature"],
+            validation["spreadBps"],
+            rt.settings["exitTimeframe"],
+            format_price(exit_guideline),
+        )
+        text = format_signal_message(rt, side, price, signal_at, exit_guideline, validation)
         task = asyncio.create_task(self._send_telegram(signal_id, text))
         self.notification_tasks.add(task)
         task.add_done_callback(self.notification_tasks.discard)
@@ -521,29 +574,6 @@ class ShadowSignalApp:
                     trackers.remove(tracker)
                 await self.storage.update_signal(tracker.signal_id, fields)
 
-    def _telegram_text(
-        self,
-        rt: SymbolRuntime,
-        side: str,
-        price: float,
-        exit_guideline: float,
-        validation: dict[str, Any],
-    ) -> str:
-        return "\n".join(
-            [
-                f"{side} SIGNAL",
-                f"Symbol: {rt.symbol}",
-                f"Price: {format_number(price)}",
-                f"{rt.settings['exitTimeframe']} exit guideline: {format_number(exit_guideline)}",
-                f"{rt.settings['entryTimeframe']} EMA: {format_number(rt.entry_ema)}",
-                f"{rt.settings['entryTimeframe']} ATR: {format_number(rt.entry_atr)}",
-                f"VWAP: {format_number(validation['vwap'])}",
-                f"CVD slope: {validation['cvdSlope']:.6f}",
-                f"CVD curvature: {validation['cvdCurvature']:.6f}",
-                f"Spread: {validation['spreadBps']:.3f} bps",
-            ]
-        )
-
     def _mark_market_gap(self) -> None:
         for rt in self.runtimes.values():
             if rt.state != "COOLDOWN":
@@ -561,38 +591,39 @@ class ShadowSignalApp:
             rt.market_stream_continuous = False
 
     def _status_line(self, rt: SymbolRuntime) -> str:
-        """One compact line telling where this symbol stands right now."""
+        """One compact line telling where this symbol stands and what it waits for."""
         now_ms = int(time.time() * 1000)
-        parts = [f"{rt.symbol} {rt.state}", f"px={format_number(rt.last_price)}"]
+        band = f"band=[{format_price(rt.lower_entry)}..{format_price(rt.upper_entry)}]"
+        parts = [f"{rt.symbol:<10} {rt.state:<11}", f"px={format_price(rt.last_price)}", band]
 
-        for label, level in (("lower", rt.lower_entry), ("upper", rt.upper_entry)):
-            if level is None:
-                continue
-            if rt.last_price is None or rt.entry_atr in (None, 0):
-                parts.append(f"{label}={format_number(level)}")
-                continue
-            distance = rt.last_price - level
-            parts.append(
-                f"{label}={format_number(level)}"
-                f"({distance / level * 100.0:+.2f}%/{distance / rt.entry_atr:+.2f}atr)"
-            )
-
-        parts.append(f"vwap={'ready' if rt.vwap_complete else 'warmup'}")
-        ready_buckets = sum(1 for value in rt.cvd_deltas if value is not None)
-        parts.append(f"cvd={ready_buckets}/{int(rt.settings['cvdLookback'])}")
-
-        if rt.best_bid and rt.best_ask:
-            parts.append(f"spread={spread_bps(rt.best_bid, rt.best_ask):.2f}bps")
-        else:
-            parts.append("spread=n/a")
-
-        parts.append(f"trade={_age_text(now_ms, rt.last_trade_event_ms)}")
-        parts.append(f"book={_age_text(now_ms, rt.last_book_event_ms)}")
-        parts.append(f"meas={len(self.outcomes[rt.symbol])}")
+        if rt.last_price is not None and rt.entry_atr and rt.lower_entry and rt.upper_entry:
+            if rt.last_price < rt.lower_entry:
+                parts.append(f"{(rt.lower_entry - rt.last_price) / rt.entry_atr:.2f}atr_below_lower")
+            elif rt.last_price > rt.upper_entry:
+                parts.append(f"{(rt.last_price - rt.upper_entry) / rt.entry_atr:.2f}atr_above_upper")
+            else:
+                parts.append(f"{(rt.last_price - rt.lower_entry) / rt.entry_atr:+.2f}atr_in_band")
 
         if rt.state == "COOLDOWN" and rt.cooldown_until is not None:
-            remaining = (rt.cooldown_until - datetime.now(UTC)).total_seconds()
-            parts.append(f"cooldown={max(0.0, remaining):.0f}s")
+            remaining = max(0.0, (rt.cooldown_until - datetime.now(UTC)).total_seconds())
+            parts.append(f"waiting={remaining:.0f}s_cooldown")
+        else:
+            parts.append(f"waiting={waiting_for(rt).replace(' ', '_')}")
+
+        ready_buckets = sum(1 for value in rt.cvd_deltas if value is not None)
+        spread = (
+            f"{spread_bps(rt.best_bid, rt.best_ask):.2f}bps"
+            if rt.best_bid and rt.best_ask
+            else "n/a"
+        )
+        parts += [
+            f"vwap={'ready' if rt.vwap_complete else 'warmup'}",
+            f"cvd={ready_buckets}/{int(rt.settings['cvdLookback'])}",
+            f"spread={spread}",
+            f"age(trade/book)={_age_text(now_ms, rt.last_trade_event_ms)}"
+            f"/{_age_text(now_ms, rt.last_book_event_ms)}",
+            f"meas={len(self.outcomes[rt.symbol])}",
+        ]
         return " ".join(parts)
 
     def _log_status(self) -> None:
@@ -612,6 +643,41 @@ class ShadowSignalApp:
             if self.stop_event.is_set():
                 return
             self._log_status()
+
+    async def telegram_status_loop(self) -> None:
+        """Periodic Telegram digest: recent signal performance and live state."""
+        interval = self.config.telegram_status_sec
+        if interval <= 0:
+            logger.info("Telegram status digest disabled (telegramStatusSec=0)")
+            return
+        # Send one digest shortly after startup so the wiring is visible immediately,
+        # then settle into the configured interval.
+        delay = min(30, interval)
+        while not self.stop_event.is_set():
+            await self._sleep_or_stop(delay)
+            if self.stop_event.is_set():
+                return
+            delay = interval
+            try:
+                await self._send_status_digest()
+            except Exception:
+                logger.exception("Telegram status digest failed")
+
+    async def _send_status_digest(self) -> None:
+        now = datetime.now(UTC)
+        signals = await self.storage.signals_since(now - STATS_WINDOW)
+        text = format_status_message(
+            now=now,
+            uptime_sec=(now - self.started_at).total_seconds(),
+            runtimes=self.runtimes,
+            active_measurements={s: len(t) for s, t in self.outcomes.items()},
+            market_summary=self.market_stats.summary(),
+            public_summary=self.public_stats.summary(),
+            max_loop_lag_sec=self.max_loop_lag_sec,
+            performance=summarize_signals(signals),
+        )
+        await self.telegram.send(text)
+        logger.info("Telegram status digest sent (%d signals in the last 24h)", len(signals))
 
     async def loop_lag_loop(self) -> None:
         """Measure how late a 1s sleep wakes up: high values mean a saturated event loop."""
@@ -745,6 +811,7 @@ class ShadowSignalApp:
             asyncio.create_task(self.heartbeat_loop(), name="heartbeat"),
             asyncio.create_task(self.status_loop(), name="status"),
             asyncio.create_task(self.loop_lag_loop(), name="loop-lag"),
+            asyncio.create_task(self.telegram_status_loop(), name="telegram-status"),
         ]
         try:
             await self.stop_event.wait()

@@ -29,6 +29,7 @@ binance-shadow-signal/
 │   ├── config.py
 │   ├── indicators.py
 │   ├── main.py
+│   ├── messages.py
 │   ├── models.py
 │   ├── storage.py
 │   ├── symbols.py
@@ -38,7 +39,9 @@ binance-shadow-signal/
 │   ├── test_app_smoke.py
 │   ├── test_config.py
 │   ├── test_indicators.py
+│   ├── test_messages.py
 │   ├── test_models.py
+│   ├── test_storage_config.py
 │   ├── test_symbols.py
 │   └── test_validation.py
 ├── .dockerignore
@@ -303,6 +306,7 @@ Első induláskor automatikusan létrejön az alábbi dokumentum:
   "tradeMaxAgeSec": 3,
   "cooldownSec": 600,
   "heartbeatSec": 3600,
+  "telegramStatusSec": 3600,
   "symbolOverrides": {},
   "logStatusSec": 60,
   "symbolAutoPopulate": false,
@@ -381,6 +385,24 @@ jelent, es minden `aggTrade` vegigfut a teljes state machine-en. A `maxSymbols` 
 eroforras-korlat is: erdemes alacsonyan kezdeni, es a `STATUS` sor `loop_lag_max`
 erteket figyelni.
 
+### Telegram uzenetek
+
+Ketfele uzenet megy ki.
+
+**Signal** — minden kiirt signalnal azonnal. Nem csak az adatokat tartalmazza, hanem azt
+is, hogy *miert* keletkezett: melyik sav szelet lepte at az ar, hol allt a VWAP a
+nyitashoz es az arhoz kepest, mennyi a CVD slope/curvature, a spread es az adatfrissesseg.
+A "Levels" blokkban a belepo sav es az 1h exit guideline a szamitasaval egyutt.
+
+**Statusz osszefoglalo** — `telegramStatusSec` masodpercenkent (default 3600, `0` kikapcsolja).
+Az elso digest az indulas utan ~30 masodperccel megy ki, hogy azonnal lasd, mukodik-e.
+Tartalma: az elmult 24 ora signaljai (darabszam, LONG/SHORT bontas, atlagos 20 perces
+hozam, nyeresges/veszteseges arany, legjobb es legrosszabb), symbolonkent az aktualis
+state es a savtol mert tavolsag ATR-ben, valamint a stream egeszseg es a loop lag.
+
+A `telegramStatusSec` **nem** azonos a `heartbeatSec`-kel: utobbi a Mongo `heartbeats`
+collectionbe ir, es nem kuld Telegram uzenetet.
+
 ### Runtime log
 
 `logStatusSec` masodpercenkent egy osszefoglalo sor a kapcsolatokrol, majd symbolonkent
@@ -388,14 +410,20 @@ egy allapotsor:
 
 ```text
 STATUS loop_lag_max=12ms market[612.4s, 45210 msgs, 73.8/s] public[8.1s, 0 msgs, 0.0/s]
-  BTCUSDT LONG_ARMED px=79269.1 lower=79778.5(-0.64%/-1.40atr) upper=81048(+2.24%/+4.90atr)
-          vwap=ready cvd=5/5 spread=0.63bps trade=0.1s book=0.2s meas=0
+  BTCUSDT    LONG_ARMED  px=79357.3 band=[79104.52..80367.21] +0.70atr_in_band
+             waiting=re-entry_cross_up_through_79104.52 vwap=ready cvd=5/5
+             spread=0.01bps age(trade/book)=0.3s/0.1s meas=0
 ```
 
 - `loop_lag_max` — mennyit kesett a leghosszabb 1 masodperces alvas. Tartosan magas
   ertek telitett event loopot jelez, ami WebSocket keepalive timeoutot is okozhat.
-- `lower` / `upper` — a sav es a tavolsag tole szazalekban es ATR-ben.
+- `band` — a belepo sav, es hogy az ar hol all benne ATR-ben merve.
+- `waiting` — mi kell ahhoz, hogy tovabblepjen ez a symbol. Ez mondja meg, miert nem
+  tortenik semmi.
 - `cvd=5/5` — hany teljes 1 perces bucket all rendelkezesre a lookbackhez.
+
+Indulaskor egy osszefoglalo blokk kiirja a sav kepletet, a signal osszes feltetelet es
+a cooldown/meres parametereket, igy a log a dokumentacio nelkul is ertelmezheto.
 
 Sikertelen re-entry validacio egy sorban, okkal es szamokkal:
 

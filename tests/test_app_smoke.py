@@ -122,8 +122,11 @@ def test_signal_is_announced_on_telegram(monkeypatch) -> None:
     app, _storage, telegram = run_scenario(monkeypatch)
     asyncio.run(_drain(app))
     assert len(telegram.sent) == 1
-    assert "LONG SIGNAL" in telegram.sent[0]
-    assert SYMBOL in telegram.sent[0]
+    message = telegram.sent[0]
+    assert f"<b>LONG · {SYMBOL}</b>" in message
+    assert "Why now" in message
+    assert "crossed back above" in message
+    assert "No order is sent" in message
 
 
 async def _drain(app: ShadowSignalApp) -> None:
@@ -134,12 +137,13 @@ async def _drain(app: ShadowSignalApp) -> None:
 def test_status_line_reports_state_bands_and_data_readiness(monkeypatch) -> None:
     app, _storage, _telegram = run_scenario(monkeypatch)
     line = app._status_line(app.runtimes[SYMBOL])
-    assert line.startswith(f"{SYMBOL} COOLDOWN")
-    assert "lower=82.5" in line
+    assert line.startswith(f"{SYMBOL:<10} COOLDOWN")
+    assert "band=[82.5..117.5]" in line
     assert "vwap=ready" in line
     assert "cvd=5/5" in line
     assert "spread=" in line
-    assert "cooldown=" in line
+    assert "waiting=" in line
+    assert "_cooldown" in line
 
 
 def test_rejected_re_entry_keeps_the_symbol_armed(monkeypatch) -> None:

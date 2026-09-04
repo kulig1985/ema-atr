@@ -20,6 +20,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tradeMaxAgeSec": 3,
     "cooldownSec": 600,
     "heartbeatSec": 3600,
+    "telegramStatusSec": 3600,
     "symbolOverrides": {},
     "logStatusSec": 60,
     "symbolAutoPopulate": True,
@@ -37,6 +38,7 @@ GLOBAL_ONLY_KEYS = {
     "symbolOverrides",
     "updatedAt",
     "heartbeatSec",
+    "telegramStatusSec",
     "logStatusSec",
     "symbolAutoPopulate",
     "quoteAsset",
@@ -85,6 +87,11 @@ class StrategyConfig:
     @property
     def heartbeat_sec(self) -> int:
         return int(self.document["heartbeatSec"])
+
+    @property
+    def telegram_status_sec(self) -> int:
+        """Seconds between Telegram status digests; 0 disables them."""
+        return int(self.document["telegramStatusSec"])
 
     @property
     def log_status_sec(self) -> int:
@@ -143,6 +150,8 @@ def validate_config_document(document: dict[str, Any]) -> None:
             raise ValueError(f"{symbol}: unsupported override fields: {sorted(unsupported)}")
     if int(document["heartbeatSec"]) <= 0:
         raise ValueError("heartbeatSec must be > 0")
+    if int(document["telegramStatusSec"]) < 0:
+        raise ValueError("telegramStatusSec must be >= 0 (0 disables the digest)")
     if int(document["logStatusSec"]) <= 0:
         raise ValueError("logStatusSec must be > 0")
     if not isinstance(document["symbolAutoPopulate"], bool):

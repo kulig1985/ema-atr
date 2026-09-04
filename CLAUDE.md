@@ -31,15 +31,16 @@ Nincs linter/formatter konfigurálva. A futtatáshoz `.env` kell (`cp .env.examp
 
 ## Architektúra
 
-Egyetlen `asyncio` processz (`python -m app`), öt párhuzamos taskkal, amelyeket az `ShadowSignalApp.run()` indít:
+Egyetlen `asyncio` processz (`python -m app`), hat párhuzamos taskkal, amelyeket az `ShadowSignalApp.run()` indít:
 
 - **`market_loop`** — `aggTrade` + kline WS (`wss://fstream.binance.com/market/stream`). Ez a fő eseményforrás: minden `aggTrade` frissíti a VWAP-ot, az 1 perces CVD bucketet, az outcome trackereket, és **itt fut a teljes state machine**. Nincs külön ticker loop; a stratégia trade-eseményvezérelt.
 - **`public_loop`** — `bookTicker` WS (`wss://fstream.binance.com/public/stream`), külön endpoint, külön reconnect backoff. Csak bid/ask-ot és frissességet tart karban.
 - **`heartbeat_loop`** — `heartbeatSec`-enként állapotdoc a `heartbeats` collectionbe.
 - **`status_loop`** — `logStatusSec`-enként egy összefoglaló + symbolonként egy állapotsor a logba (`_log_status` / `_status_line`).
+- **`telegram_status_loop`** — `telegramStatusSec`-enként Telegram digest (`0` kikapcsolja). Az első az indulás után ~30 másodperccel megy ki. Ez **nem** a `heartbeat_loop`: az Mongóba ír, Telegramot nem küld.
 - **`loop_lag_loop`** — 1 másodperces alvás tényleges késését méri; a `max_loop_lag_sec` a `STATUS` sorba és a heartbeatbe kerül. Ez a diagnosztika arra, hogy telített event loop okoz-e WebSocket keepalive timeoutot.
 
-Modulok: `main.py` (app + state machine + outcome mérés), `binance_feed.py` (WS/REST I/O + `StreamStats`), `indicators.py` (tiszta függvények: EMA, Wilder ATR, CVD polyfit, VWAP predikátumok, spread, return), `validation.py` (a signal validáció tiszta függvényként, `ValidationResult`), `symbols.py` (`select_symbols` tiszta szűrés/rendezés), `models.py` (`Candle`, `FlowBucket`, `OutcomeTracker`, `SymbolRuntime`), `config.py` (default doc + validáció + `symbolOverrides` merge), `storage.py` (Mongo, indexek, collection bootstrap), `telegram.py`.
+Modulok: `main.py` (app + state machine + outcome mérés), `binance_feed.py` (WS/REST I/O + `StreamStats`), `indicators.py` (tiszta függvények: EMA, Wilder ATR, CVD polyfit, VWAP predikátumok, spread, return), `validation.py` (a signal validáció tiszta függvényként, `ValidationResult`), `symbols.py` (`select_symbols` tiszta szűrés/rendezés), `models.py` (`Candle`, `FlowBucket`, `OutcomeTracker`, `SymbolRuntime`), `messages.py` (Telegram szövegek tiszta formázóként + `summarize_signals`), `config.py` (default doc + validáció + `symbolOverrides` merge), `storage.py` (Mongo, indexek, collection bootstrap), `telegram.py`.
 
 Az auto-populate quote asset szűrése konfigurálható (`quoteAsset`, default `USDT`), és a `fetch_symbol_universe` paramétere — ne égesd vissza a kódba.
 
@@ -68,13 +69,17 @@ A visszatérés `ValidationResult`: elfogadásnál `snapshot`, elutasításnál 
 
 Egyetlen `config` dokumentum (`_id: "strategy"`), első indításkor a `DEFAULT_CONFIG`-ból jön létre. Meglévő dokumentumba a `Storage.initialize` bemergeli a hiányzó default kulcsokat, így új config mező felvétele nem töri meg a futó telepítést.
 
-`StrategyConfig.for_symbol()` merge-eli a `symbolOverrides`-t — csak az `OVERRIDABLE_KEYS` írható felül. A `GLOBAL_ONLY_KEYS` halmaz mondja meg, mi **nem** kerül bele a per-symbol settingsbe (és ezzel a `signals.configSnapshot`-ba sem): a timeframe-eken túl a `logStatusSec`, `symbolAutoPopulate`, `quoteAsset`, `minQuoteVolume24h`, `maxSymbols`. Új stratégiai paraméter felvételekor: `DEFAULT_CONFIG` + `validate_symbol_settings` + (ha per-symbol) `OVERRIDABLE_KEYS`; új *globális* paraméternél `DEFAULT_CONFIG` + `GLOBAL_ONLY_KEYS` + `validate_config_document`.
+`StrategyConfig.for_symbol()` merge-eli a `symbolOverrides`-t — csak az `OVERRIDABLE_KEYS` írható felül. A `GLOBAL_ONLY_KEYS` halmaz mondja meg, mi **nem** kerül bele a per-symbol settingsbe (és ezzel a `signals.configSnapshot`-ba sem): a timeframe-eken túl a `logStatusSec`, `telegramStatusSec`, `symbolAutoPopulate`, `quoteAsset`, `minQuoteVolume24h`, `maxSymbols`. Új stratégiai paraméter felvételekor: `DEFAULT_CONFIG` + `validate_symbol_settings` + (ha per-symbol) `OVERRIDABLE_KEYS`; új *globális* paraméternél `DEFAULT_CONFIG` + `GLOBAL_ONLY_KEYS` + `validate_config_document`.
 
 A `cvdLookback` minimuma 3 a kvadratikus polyfit miatt. A `cvd_deltas` deque `maxlen`-je a **bootstrap-kori** `cvdLookback` — lookback növelése futásidőben nem támogatott.
 
 ### Mongo
 
 Pontosan öt collection: `config`, `candles`, `flow_1m`, `signals`, `heartbeats`. Ezen kívüli collectionre a `Storage.initialize` egy info sort logol (megosztott Mongónál ez normális). `pymongo` `AsyncMongoClient` (nem motor), `tz_aware=True`. Idempotens írás: `candles` és `flow_1m` unique indexre upsertel.
+
+### Telegram
+
+A `telegram.py` `parse_mode: "HTML"`-lel küld, ezért minden beszúrt szabad szöveget `html.escape`-elni kell a `messages.py`-ban. A szövegformázók tiszta függvények (nincs I/O, `now` paraméterként jön), a `tests/test_messages.py` ezekre állít.
 
 ### Diagnosztika
 
