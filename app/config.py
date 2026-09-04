@@ -22,7 +22,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "heartbeatSec": 3600,
     "symbolOverrides": {},
     "logStatusSec": 60,
-    "symbolAutoPopulate": False,
+    "symbolAutoPopulate": True,
     "quoteAsset": "USDT",
     "minQuoteVolume24h": 500_000_000,
     "maxSymbols": 5,
