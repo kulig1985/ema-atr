@@ -12,16 +12,18 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
-from .binance_feed import fetch_closed_klines, run_market_stream, run_public_stream
+from .binance_feed import (
+    StreamStats,
+    fetch_closed_klines,
+    fetch_symbol_universe,
+    run_market_stream,
+    run_public_stream,
+)
 from .config import StrategyConfig, interval_to_ms
 from .indicators import (
-    bearish_vwap,
-    bullish_vwap,
-    cvd_valid,
     directional_return_pct,
     ema,
     ema_next,
-    normalized_cvd_metrics,
     spread_bps,
     true_range,
     wilder_atr,
@@ -29,7 +31,9 @@ from .indicators import (
 )
 from .models import Candle, FlowBucket, OutcomeTracker, SymbolRuntime
 from .storage import Storage
+from .symbols import select_symbols
 from .telegram import TelegramClient
+from .validation import evaluate_validation
 
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
@@ -42,22 +46,27 @@ class ShadowSignalApp:
         storage: Storage,
         http: httpx.AsyncClient,
         telegram: TelegramClient,
+        symbols: list[str],
     ) -> None:
         self.config = config
         self.storage = storage
         self.http = http
         self.telegram = telegram
+        self.symbols = list(symbols)
         self.runtimes = {
             symbol: SymbolRuntime(
                 symbol=symbol,
                 settings=config.for_symbol(symbol),
                 cvd_deltas=deque(maxlen=int(config.for_symbol(symbol)["cvdLookback"])),
             )
-            for symbol in config.symbols
+            for symbol in self.symbols
         }
-        self.outcomes: dict[str, list[OutcomeTracker]] = {symbol: [] for symbol in config.symbols}
+        self.outcomes: dict[str, list[OutcomeTracker]] = {symbol: [] for symbol in self.symbols}
         self.notification_tasks: set[asyncio.Task] = set()
         self.stop_event = asyncio.Event()
+        self.market_stats = StreamStats("Binance market stream")
+        self.public_stats = StreamStats("Binance public stream")
+        self.max_loop_lag_sec = 0.0
 
     async def bootstrap(self) -> None:
         interrupted = await self.storage.mark_stale_active_measurements_interrupted()
@@ -392,61 +401,20 @@ class ShadowSignalApp:
             and rt.exit_last_close_time == expected_exit_close
         )
 
-    def _validation_snapshot(self, rt: SymbolRuntime, side: str, current_price: float) -> dict[str, Any] | None:
-        vwap = rt.current_vwap
-        if not rt.vwap_complete or rt.candle_open is None or vwap is None:
-            return None
-
-        if side == "LONG":
-            if not bullish_vwap(current_price, rt.candle_open, vwap):
-                return None
-        else:
-            if not bearish_vwap(current_price, rt.candle_open, vwap):
-                return None
-
-        lookback = int(rt.settings["cvdLookback"])
-        values = list(rt.cvd_deltas)
-        if len(values) < lookback or any(value is None for value in values[-lookback:]):
-            return None
-        normalized_deltas = [float(value) for value in values[-lookback:] if value is not None]
-        cvd_series, slope, curvature = normalized_cvd_metrics(normalized_deltas)
-        if not cvd_valid(side, slope, curvature):
-            return None
-
-        if rt.best_bid is None or rt.best_ask is None or rt.last_book_event_ms is None:
-            return None
-        current_spread = spread_bps(rt.best_bid, rt.best_ask)
-        if current_spread > float(rt.settings["maxSpreadBps"]):
-            return None
-
-        now_ms = int(time.time() * 1000)
-        if rt.last_trade_event_ms is None:
-            return None
-        trade_age_sec = max(0.0, (now_ms - rt.last_trade_event_ms) / 1000.0)
-        book_age_sec = max(0.0, (now_ms - rt.last_book_event_ms) / 1000.0)
-        if trade_age_sec > float(rt.settings["tradeMaxAgeSec"]):
-            return None
-        if book_age_sec > float(rt.settings["bookMaxAgeSec"]):
-            return None
-
-        return {
-            "candleOpen": rt.candle_open,
-            "vwap": vwap,
-            "normalizedCvdSeries": cvd_series,
-            "cvdSlope": slope,
-            "cvdCurvature": curvature,
-            "bid": rt.best_bid,
-            "ask": rt.best_ask,
-            "spreadBps": current_spread,
-            "tradeAgeSec": trade_age_sec,
-            "bookAgeSec": book_age_sec,
-        }
-
     async def _try_signal(self, rt: SymbolRuntime, side: str, price: float, trade_time_ms: int) -> None:
-        validation = self._validation_snapshot(rt, side, price)
-        if validation is None:
-            logger.debug("%s %s re-entry rejected by VWAP/CVD/spread/freshness", rt.symbol, side)
+        result = evaluate_validation(rt, side, price, int(time.time() * 1000))
+        if not result.accepted:
+            detail = f" ({result.detail})" if result.detail else ""
+            logger.info(
+                "%s %s re-entry REJECTED at %s: %s%s",
+                rt.symbol,
+                side,
+                format_number(price),
+                result.reason,
+                detail,
+            )
             return
+        validation = result.snapshot
 
         exit_guideline = rt.exit_guideline(side)
         if exit_guideline is None:
@@ -592,6 +560,68 @@ class ShadowSignalApp:
             rt.cvd_deltas = deque(maxlen=int(rt.settings["cvdLookback"]))
             rt.market_stream_continuous = False
 
+    def _status_line(self, rt: SymbolRuntime) -> str:
+        """One compact line telling where this symbol stands right now."""
+        now_ms = int(time.time() * 1000)
+        parts = [f"{rt.symbol} {rt.state}", f"px={format_number(rt.last_price)}"]
+
+        for label, level in (("lower", rt.lower_entry), ("upper", rt.upper_entry)):
+            if level is None:
+                continue
+            if rt.last_price is None or rt.entry_atr in (None, 0):
+                parts.append(f"{label}={format_number(level)}")
+                continue
+            distance = rt.last_price - level
+            parts.append(
+                f"{label}={format_number(level)}"
+                f"({distance / level * 100.0:+.2f}%/{distance / rt.entry_atr:+.2f}atr)"
+            )
+
+        parts.append(f"vwap={'ready' if rt.vwap_complete else 'warmup'}")
+        ready_buckets = sum(1 for value in rt.cvd_deltas if value is not None)
+        parts.append(f"cvd={ready_buckets}/{int(rt.settings['cvdLookback'])}")
+
+        if rt.best_bid and rt.best_ask:
+            parts.append(f"spread={spread_bps(rt.best_bid, rt.best_ask):.2f}bps")
+        else:
+            parts.append("spread=n/a")
+
+        parts.append(f"trade={_age_text(now_ms, rt.last_trade_event_ms)}")
+        parts.append(f"book={_age_text(now_ms, rt.last_book_event_ms)}")
+        parts.append(f"meas={len(self.outcomes[rt.symbol])}")
+
+        if rt.state == "COOLDOWN" and rt.cooldown_until is not None:
+            remaining = (rt.cooldown_until - datetime.now(UTC)).total_seconds()
+            parts.append(f"cooldown={max(0.0, remaining):.0f}s")
+        return " ".join(parts)
+
+    def _log_status(self) -> None:
+        logger.info(
+            "STATUS loop_lag_max=%.0fms market[%s] public[%s]",
+            self.max_loop_lag_sec * 1000.0,
+            self.market_stats.summary(),
+            self.public_stats.summary(),
+        )
+        self.max_loop_lag_sec = 0.0
+        for rt in self.runtimes.values():
+            logger.info("  %s", self._status_line(rt))
+
+    async def status_loop(self) -> None:
+        while not self.stop_event.is_set():
+            await self._sleep_or_stop(self.config.log_status_sec)
+            if self.stop_event.is_set():
+                return
+            self._log_status()
+
+    async def loop_lag_loop(self) -> None:
+        """Measure how late a 1s sleep wakes up: high values mean a saturated event loop."""
+        while not self.stop_event.is_set():
+            started = time.monotonic()
+            await self._sleep_or_stop(1.0)
+            if self.stop_event.is_set():
+                return
+            self.max_loop_lag_sec = max(self.max_loop_lag_sec, time.monotonic() - started - 1.0)
+
     async def market_loop(self) -> None:
         backoff = 1
         while not self.stop_event.is_set():
@@ -601,18 +631,30 @@ class ShadowSignalApp:
                 for rt in self.runtimes.values():
                     rt.market_stream_continuous = True
                 await run_market_stream(
-                    self.config.symbols,
+                    self.symbols,
                     str(self.config.document["entryTimeframe"]),
                     str(self.config.document["exitTimeframe"]),
                     self.handle_market_event,
+                    self.market_stats,
                 )
                 if not self.stop_event.is_set():
+                    logger.warning(
+                        "Binance market stream ended without error after %s",
+                        self.market_stats.summary(),
+                    )
                     await self._interrupt_active_measurements("market_stream_gap")
                 backoff = 1
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("Binance market stream disconnected")
+            except Exception as exc:
+                logger.warning(
+                    "Binance market stream closed after %s: %s: %s - reconnecting in %ss",
+                    self.market_stats.summary(),
+                    type(exc).__name__,
+                    exc,
+                    backoff,
+                )
+                logger.debug("Market stream traceback", exc_info=True)
                 await self._interrupt_active_measurements("market_stream_gap")
                 await self._sleep_or_stop(backoff)
                 backoff = min(backoff * 2, 30)
@@ -621,12 +663,24 @@ class ShadowSignalApp:
         backoff = 1
         while not self.stop_event.is_set():
             try:
-                await run_public_stream(self.config.symbols, self.handle_public_event)
+                await run_public_stream(self.symbols, self.handle_public_event, self.public_stats)
+                if not self.stop_event.is_set():
+                    logger.warning(
+                        "Binance public stream ended without error after %s",
+                        self.public_stats.summary(),
+                    )
                 backoff = 1
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("Binance public stream disconnected")
+            except Exception as exc:
+                logger.warning(
+                    "Binance public stream closed after %s: %s: %s - reconnecting in %ss",
+                    self.public_stats.summary(),
+                    type(exc).__name__,
+                    exc,
+                    backoff,
+                )
+                logger.debug("Public stream traceback", exc_info=True)
                 await self._sleep_or_stop(backoff)
                 backoff = min(backoff * 2, 30)
 
@@ -661,6 +715,19 @@ class ShadowSignalApp:
                 "ts": datetime.now(UTC),
                 "status": "ok",
                 "symbols": symbols,
+                "streams": {
+                    "market": {
+                        "connects": self.market_stats.connects,
+                        "messages": self.market_stats.messages,
+                        "uptimeSec": self.market_stats.uptime_sec,
+                    },
+                    "public": {
+                        "connects": self.public_stats.connects,
+                        "messages": self.public_stats.messages,
+                        "uptimeSec": self.public_stats.uptime_sec,
+                    },
+                },
+                "maxLoopLagSec": self.max_loop_lag_sec,
             }
         )
 
@@ -676,6 +743,8 @@ class ShadowSignalApp:
             asyncio.create_task(self.market_loop(), name="market-stream"),
             asyncio.create_task(self.public_loop(), name="public-stream"),
             asyncio.create_task(self.heartbeat_loop(), name="heartbeat"),
+            asyncio.create_task(self.status_loop(), name="status"),
+            asyncio.create_task(self.loop_lag_loop(), name="loop-lag"),
         ]
         try:
             await self.stop_event.wait()
@@ -702,11 +771,60 @@ class ShadowSignalApp:
                 trackers.remove(tracker)
 
 
+def _age_text(now_ms: int, event_ms: int | None) -> str:
+    if event_ms is None:
+        return "n/a"
+    return f"{max(0.0, (now_ms - event_ms) / 1000.0):.1f}s"
+
+
 def format_number(value: float | None) -> str:
     if value is None:
         return "n/a"
     text = f"{float(value):.8f}"
     return text.rstrip("0").rstrip(".")
+
+
+async def resolve_symbols(http: httpx.AsyncClient, config: StrategyConfig) -> list[str]:
+    """Config symbols, or the most liquid perpetuals when auto-populate is on.
+
+    Never returns an empty list: any failure falls back to the configured symbols.
+    """
+    if not config.symbol_auto_populate:
+        logger.info("Symbols from config: %s", ", ".join(config.symbols))
+        return config.symbols
+
+    min_volume = config.min_quote_volume_24h
+    try:
+        universe = await fetch_symbol_universe(http)
+    except Exception:
+        logger.exception("Symbol auto-populate failed, falling back to config symbols")
+        return config.symbols
+
+    selected = select_symbols(universe, min_volume, config.max_symbols)
+    if not selected:
+        logger.warning(
+            "No USDT perpetual reached minQuoteVolume24h=%.0f (best was %.0f), "
+            "falling back to config symbols: %s",
+            min_volume,
+            max((volume for _symbol, volume in universe), default=0.0),
+            ", ".join(config.symbols),
+        )
+        return config.symbols
+
+    volumes = dict(universe)
+    eligible = sum(1 for _symbol, volume in universe if volume >= min_volume)
+    logger.info(
+        "Symbol auto-populate: %d of %d USDT perpetuals above %.0f USDT 24h volume, using %d",
+        eligible,
+        len(universe),
+        min_volume,
+        len(selected),
+    )
+    for symbol in selected:
+        logger.info("  %-14s 24h quote volume %15.0f USDT", symbol, volumes[symbol])
+    if eligible > len(selected):
+        logger.info("  %d further symbol(s) skipped by maxSymbols=%d", eligible - len(selected), config.max_symbols)
+    return selected
 
 
 async def async_main() -> None:
@@ -726,7 +844,8 @@ async def async_main() -> None:
     try:
         config = await storage.initialize()
         telegram = TelegramClient(http, telegram_token, telegram_chat_id)
-        app = ShadowSignalApp(config, storage, http, telegram)
+        symbols = await resolve_symbols(http, config)
+        app = ShadowSignalApp(config, storage, http, telegram, symbols)
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):

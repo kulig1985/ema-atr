@@ -26,7 +26,11 @@ class Storage:
                 await self.db.create_collection(name)
         unexpected = set(await self.db.list_collection_names()) - set(COLLECTIONS)
         if unexpected:
-            logger.warning("Database contains collections not used by this project: %s", sorted(unexpected))
+            logger.info(
+                "Database has %d collection(s) this project does not use (ignored): %s",
+                len(unexpected),
+                sorted(unexpected),
+            )
 
         await self.db.candles.create_index(
             [("symbol", ASCENDING), ("timeframe", ASCENDING), ("openTime", ASCENDING)],
@@ -51,6 +55,12 @@ class Storage:
             document = dict(DEFAULT_CONFIG)
             await self.db.config.insert_one(document)
             logger.info("Inserted default strategy config into MongoDB")
+        else:
+            added = {key: value for key, value in DEFAULT_CONFIG.items() if key not in document}
+            if added:
+                await self.db.config.update_one({"_id": "strategy"}, {"$set": added})
+                document.update(added)
+                logger.info("Added new config fields with defaults: %s", sorted(added))
         validate_config_document(document)
         return StrategyConfig(document=document)
 

@@ -31,10 +31,16 @@ binance-shadow-signal/
 │   ├── main.py
 │   ├── models.py
 │   ├── storage.py
-│   └── telegram.py
+│   ├── symbols.py
+│   ├── telegram.py
+│   └── validation.py
 ├── tests/
+│   ├── test_app_smoke.py
+│   ├── test_config.py
 │   ├── test_indicators.py
-│   └── test_models.py
+│   ├── test_models.py
+│   ├── test_symbols.py
+│   └── test_validation.py
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
@@ -298,9 +304,16 @@ Első induláskor automatikusan létrejön az alábbi dokumentum:
   "cooldownSec": 600,
   "heartbeatSec": 3600,
   "symbolOverrides": {},
+  "logStatusSec": 60,
+  "symbolAutoPopulate": false,
+  "minQuoteVolume24h": 500000000,
+  "maxSymbols": 5,
   "updatedAt": null
 }
 ```
+
+Ha egy korabbi verzio config dokumentuma mar letezik, indulaskor a hianyzo mezok
+automatikusan bekerulnek a default ertekukkel; a meglevo ertekek nem valtoznak.
 
 A konfigurációt induláskor olvassa be a processz. Config módosítás után indítsd újra csak az alkalmazás-containert:
 
@@ -346,6 +359,50 @@ Példa:
   }
 }
 ```
+
+### Symbol auto-populate
+
+`symbolAutoPopulate: true` eseten a program induláskor nem a `symbols` listat hasznalja,
+hanem maga valasztja ki a legforgalmasabb szerzodeseket:
+
+1. `GET /fapi/v1/exchangeInfo` — csak `PERPETUAL`, `TRADING` statuszu, USDT quote asset.
+2. `GET /fapi/v1/ticker/24hr` — a 24 oras `quoteVolume` USDT-ben.
+3. Szures `minQuoteVolume24h`-ra, rendezes csokkeno forgalom szerint, vagas `maxSymbols`-ra.
+
+A kivalasztott lista a logba es a heartbeatbe kerul. A `config.symbols` mezot **nem**
+irja felul: az kezi listakent es fallbackkent marad meg. Ha a szures ures eredmenyt ad,
+vagy a Binance nem elerheto, a program a `config.symbols` listaval indul.
+
+Minden symbol harom market streamet (aggTrade + ket kline) es egy bookTicker streamet
+jelent, es minden `aggTrade` vegigfut a teljes state machine-en. A `maxSymbols` ezert
+eroforras-korlat is: erdemes alacsonyan kezdeni, es a `STATUS` sor `loop_lag_max`
+erteket figyelni.
+
+### Runtime log
+
+`logStatusSec` masodpercenkent egy osszefoglalo sor a kapcsolatokrol, majd symbolonkent
+egy allapotsor:
+
+```text
+STATUS loop_lag_max=12ms market[612.4s, 45210 msgs, 73.8/s] public[8.1s, 0 msgs, 0.0/s]
+  BTCUSDT LONG_ARMED px=79269.1 lower=79778.5(-0.64%/-1.40atr) upper=81048(+2.24%/+4.90atr)
+          vwap=ready cvd=5/5 spread=0.63bps trade=0.1s book=0.2s meas=0
+```
+
+- `loop_lag_max` — mennyit kesett a leghosszabb 1 masodperces alvas. Tartosan magas
+  ertek telitett event loopot jelez, ami WebSocket keepalive timeoutot is okozhat.
+- `lower` / `upper` — a sav es a tavolsag tole szazalekban es ATR-ben.
+- `cvd=5/5` — hany teljes 1 perces bucket all rendelkezesre a lookbackhez.
+
+Sikertelen re-entry validacio egy sorban, okkal es szamokkal:
+
+```text
+BTCUSDT LONG re-entry REJECTED at 79780.1: cvd_direction (slope=-0.210000 curv=+0.030000)
+```
+
+Lehetseges okok: `vwap_not_ready`, `vwap_condition`, `cvd_not_enough_buckets`,
+`cvd_direction`, `book_missing`, `spread_too_wide`, `trade_missing`, `trade_stale`,
+`book_stale`.
 
 ### `candles`
 

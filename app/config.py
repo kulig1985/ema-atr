@@ -21,7 +21,25 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cooldownSec": 600,
     "heartbeatSec": 3600,
     "symbolOverrides": {},
+    "logStatusSec": 60,
+    "symbolAutoPopulate": False,
+    "minQuoteVolume24h": 500_000_000,
+    "maxSymbols": 5,
     "updatedAt": None,
+}
+
+# Keys that stay global: they are never merged into per-symbol settings and
+# cannot appear in symbolOverrides.
+GLOBAL_ONLY_KEYS = {
+    "_id",
+    "symbols",
+    "symbolOverrides",
+    "updatedAt",
+    "heartbeatSec",
+    "logStatusSec",
+    "symbolAutoPopulate",
+    "minQuoteVolume24h",
+    "maxSymbols",
 }
 
 OVERRIDABLE_KEYS = {
@@ -66,11 +84,27 @@ class StrategyConfig:
     def heartbeat_sec(self) -> int:
         return int(self.document["heartbeatSec"])
 
+    @property
+    def log_status_sec(self) -> int:
+        return int(self.document["logStatusSec"])
+
+    @property
+    def symbol_auto_populate(self) -> bool:
+        return bool(self.document["symbolAutoPopulate"])
+
+    @property
+    def min_quote_volume_24h(self) -> float:
+        return float(self.document["minQuoteVolume24h"])
+
+    @property
+    def max_symbols(self) -> int:
+        return int(self.document["maxSymbols"])
+
     def for_symbol(self, symbol: str) -> dict[str, Any]:
         settings = {
             key: deepcopy(value)
             for key, value in self.document.items()
-            if key not in {"_id", "symbols", "symbolOverrides", "updatedAt", "heartbeatSec"}
+            if key not in GLOBAL_ONLY_KEYS
         }
         overrides = self.document.get("symbolOverrides", {}).get(symbol.upper(), {})
         for key, value in overrides.items():
@@ -101,13 +135,20 @@ def validate_config_document(document: dict[str, Any]) -> None:
         unsupported = set(overrides) - OVERRIDABLE_KEYS
         if unsupported:
             raise ValueError(f"{symbol}: unsupported override fields: {sorted(unsupported)}")
-    heartbeat = int(document["heartbeatSec"])
-    if heartbeat <= 0:
+    if int(document["heartbeatSec"]) <= 0:
         raise ValueError("heartbeatSec must be > 0")
+    if int(document["logStatusSec"]) <= 0:
+        raise ValueError("logStatusSec must be > 0")
+    if not isinstance(document["symbolAutoPopulate"], bool):
+        raise ValueError("symbolAutoPopulate must be a boolean")
+    if float(document["minQuoteVolume24h"]) < 0:
+        raise ValueError("minQuoteVolume24h must be >= 0")
+    if int(document["maxSymbols"]) < 1:
+        raise ValueError("maxSymbols must be >= 1")
     base = {
         key: document[key]
         for key in DEFAULT_CONFIG
-        if key not in {"_id", "symbols", "symbolOverrides", "updatedAt", "heartbeatSec"}
+        if key not in GLOBAL_ONLY_KEYS
     }
     for symbol in symbols:
         settings = dict(base)
