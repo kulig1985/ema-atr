@@ -63,8 +63,9 @@ def test_empty_config_collection_is_seeded_with_every_default_key() -> None:
     for key in NEW_KEYS:
         assert key in stored, f"{key} missing from the inserted document"
         assert stored[key] == DEFAULT_CONFIG[key]
-    assert config.symbol_auto_populate is False
+    assert config.symbol_auto_populate is DEFAULT_CONFIG["symbolAutoPopulate"]
     assert config.max_symbols == DEFAULT_CONFIG["maxSymbols"]
+    assert config.quote_asset == DEFAULT_CONFIG["quoteAsset"]
 
 
 def test_config_document_from_an_older_version_gains_the_new_keys() -> None:
