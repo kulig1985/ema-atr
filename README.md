@@ -374,11 +374,16 @@ cp .env.example .env
 Csak ezek vannak benne:
 
 ```dotenv
-MONGO_URI=mongodb://mongo:27017/shadow_signals
+MONGO_URI=mongodb://user:pass@host:27017/shadow_signals?authSource=admin
 TELEGRAM_BOT_TOKEN=replace_me
 TELEGRAM_CHAT_ID=replace_me
 LOG_LEVEL=INFO
 ```
+
+Kulso (nem compose-beli) MongoDB eseten az `authSource` general `admin`, mert a user
+ott van letrehozva. Ha kimarad, a driver az URI utvonalan levo adatbazishoz probal
+autentikalni, es `AuthenticationFailed` (code 18) hibaval all le az indulas.
+A jelszo specialis karaktereit URL-kodolni kell (`+` -> `%2B`, `@` -> `%40`).
 
 Nincs Binance API key, mert a projekt kizárólag publikus market adatot olvas és nem küld ordert.
 
