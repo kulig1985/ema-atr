@@ -190,8 +190,11 @@ async def run_public_stream(symbols: list[str], handler: EventHandler, stats: St
     await _subscribe_loop(PUBLIC_STREAM_URL, public_streams(symbols), handler, stats)
 
 
-async def fetch_symbol_universe(client: httpx.AsyncClient) -> list[tuple[str, float]]:
-    """Tradable USDⓈ-M perpetuals with their 24h quote volume in USDT."""
+async def fetch_symbol_universe(
+    client: httpx.AsyncClient,
+    quote_asset: str = "USDT",
+) -> list[tuple[str, float]]:
+    """Tradable perpetuals of one quote asset, with their 24h quote volume."""
     info_response, ticker_response = await asyncio.gather(
         client.get(f"{REST_BASE}/fapi/v1/exchangeInfo", timeout=20.0),
         client.get(f"{REST_BASE}/fapi/v1/ticker/24hr", timeout=20.0),
@@ -199,12 +202,13 @@ async def fetch_symbol_universe(client: httpx.AsyncClient) -> list[tuple[str, fl
     info_response.raise_for_status()
     ticker_response.raise_for_status()
 
+    wanted_quote = str(quote_asset).upper()
     tradable = {
         str(item["symbol"]).upper()
         for item in info_response.json().get("symbols", [])
         if item.get("contractType") == "PERPETUAL"
         and item.get("status") == "TRADING"
-        and item.get("quoteAsset") == "USDT"
+        and str(item.get("quoteAsset", "")).upper() == wanted_quote
     }
     universe: list[tuple[str, float]] = []
     for row in ticker_response.json():

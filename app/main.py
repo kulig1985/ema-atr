@@ -795,7 +795,7 @@ async def resolve_symbols(http: httpx.AsyncClient, config: StrategyConfig) -> li
 
     min_volume = config.min_quote_volume_24h
     try:
-        universe = await fetch_symbol_universe(http)
+        universe = await fetch_symbol_universe(http, config.quote_asset)
     except Exception:
         logger.exception("Symbol auto-populate failed, falling back to config symbols")
         return config.symbols
@@ -803,8 +803,9 @@ async def resolve_symbols(http: httpx.AsyncClient, config: StrategyConfig) -> li
     selected = select_symbols(universe, min_volume, config.max_symbols)
     if not selected:
         logger.warning(
-            "No USDT perpetual reached minQuoteVolume24h=%.0f (best was %.0f), "
+            "No %s perpetual reached minQuoteVolume24h=%.0f (best was %.0f), "
             "falling back to config symbols: %s",
+            config.quote_asset,
             min_volume,
             max((volume for _symbol, volume in universe), default=0.0),
             ", ".join(config.symbols),
@@ -814,14 +815,16 @@ async def resolve_symbols(http: httpx.AsyncClient, config: StrategyConfig) -> li
     volumes = dict(universe)
     eligible = sum(1 for _symbol, volume in universe if volume >= min_volume)
     logger.info(
-        "Symbol auto-populate: %d of %d USDT perpetuals above %.0f USDT 24h volume, using %d",
+        "Symbol auto-populate: %d of %d %s perpetuals above %.0f %s 24h volume, using %d",
         eligible,
         len(universe),
+        config.quote_asset,
         min_volume,
+        config.quote_asset,
         len(selected),
     )
     for symbol in selected:
-        logger.info("  %-14s 24h quote volume %15.0f USDT", symbol, volumes[symbol])
+        logger.info("  %-14s 24h quote volume %15.0f %s", symbol, volumes[symbol], config.quote_asset)
     if eligible > len(selected):
         logger.info("  %d further symbol(s) skipped by maxSymbols=%d", eligible - len(selected), config.max_symbols)
     return selected

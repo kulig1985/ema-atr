@@ -23,6 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "symbolOverrides": {},
     "logStatusSec": 60,
     "symbolAutoPopulate": False,
+    "quoteAsset": "USDT",
     "minQuoteVolume24h": 500_000_000,
     "maxSymbols": 5,
     "updatedAt": None,
@@ -38,6 +39,7 @@ GLOBAL_ONLY_KEYS = {
     "heartbeatSec",
     "logStatusSec",
     "symbolAutoPopulate",
+    "quoteAsset",
     "minQuoteVolume24h",
     "maxSymbols",
 }
@@ -93,6 +95,10 @@ class StrategyConfig:
         return bool(self.document["symbolAutoPopulate"])
 
     @property
+    def quote_asset(self) -> str:
+        return str(self.document["quoteAsset"]).upper()
+
+    @property
     def min_quote_volume_24h(self) -> float:
         return float(self.document["minQuoteVolume24h"])
 
@@ -141,6 +147,9 @@ def validate_config_document(document: dict[str, Any]) -> None:
         raise ValueError("logStatusSec must be > 0")
     if not isinstance(document["symbolAutoPopulate"], bool):
         raise ValueError("symbolAutoPopulate must be a boolean")
+    quote_asset = document["quoteAsset"]
+    if not isinstance(quote_asset, str) or not quote_asset.strip():
+        raise ValueError("quoteAsset must be a non-empty string")
     if float(document["minQuoteVolume24h"]) < 0:
         raise ValueError("minQuoteVolume24h must be >= 0")
     if int(document["maxSymbols"]) < 1:

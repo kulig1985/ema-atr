@@ -78,6 +78,7 @@ class FakeHttp:
                         {"symbol": "ETHUSDT", "contractType": "PERPETUAL", "status": "TRADING", "quoteAsset": "USDT"},
                         {"symbol": "SOLUSDT", "contractType": "PERPETUAL", "status": "TRADING", "quoteAsset": "USDT"},
                         {"symbol": "BTCUSDC", "contractType": "PERPETUAL", "status": "TRADING", "quoteAsset": "USDC"},
+                        {"symbol": "ETHUSDC", "contractType": "PERPETUAL", "status": "TRADING", "quoteAsset": "USDC"},
                         {"symbol": "OLDUSDT", "contractType": "PERPETUAL", "status": "SETTLING", "quoteAsset": "USDT"},
                         {"symbol": "BTCUSDT_240628", "contractType": "CURRENT_QUARTER", "status": "TRADING", "quoteAsset": "USDT"},
                     ]
@@ -89,22 +90,58 @@ class FakeHttp:
                 {"symbol": "ETHUSDT", "quoteVolume": "5000"},
                 {"symbol": "SOLUSDT", "quoteVolume": "100"},
                 {"symbol": "BTCUSDC", "quoteVolume": "8000"},
+                {"symbol": "ETHUSDC", "quoteVolume": "4000"},
                 {"symbol": "OLDUSDT", "quoteVolume": "7000"},
                 {"symbol": "BTCUSDT_240628", "quoteVolume": "6000"},
             ]
         )
 
 
-def _universe():
+def _universe(quote_asset: str = "USDT"):
     import asyncio
 
     from app.binance_feed import fetch_symbol_universe
 
-    return asyncio.run(fetch_symbol_universe(FakeHttp()))
+    return asyncio.run(fetch_symbol_universe(FakeHttp(), quote_asset))
 
 
 def test_universe_keeps_only_tradable_usdt_perpetuals() -> None:
     assert sorted(symbol for symbol, _volume in _universe()) == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+
+def test_universe_excludes_every_other_quote_asset() -> None:
+    symbols = [symbol for symbol, _volume in _universe()]
+    assert "BTCUSDC" not in symbols
+    assert "ETHUSDC" not in symbols
+    assert all(symbol.endswith("USDT") for symbol in symbols)
+
+
+def test_quote_asset_is_configurable() -> None:
+    assert sorted(symbol for symbol, _volume in _universe("USDC")) == ["BTCUSDC", "ETHUSDC"]
+
+
+def test_quote_asset_matching_is_case_insensitive() -> None:
+    assert sorted(symbol for symbol, _volume in _universe("usdt")) == [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+    ]
+
+
+def test_auto_populate_only_returns_pairs_of_the_configured_quote_asset() -> None:
+    resolved = _resolve(
+        {"symbolAutoPopulate": True, "minQuoteVolume24h": 0, "maxSymbols": 10}, FakeHttp()
+    )
+    assert resolved == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    assert not any(symbol.endswith("USDC") for symbol in resolved)
+
+
+def test_auto_populate_honours_a_different_quote_asset() -> None:
+    resolved = _resolve(
+        {"symbolAutoPopulate": True, "minQuoteVolume24h": 0, "maxSymbols": 10, "quoteAsset": "USDC"},
+        FakeHttp(),
+    )
+    assert resolved == ["BTCUSDC", "ETHUSDC"]
 
 
 def _resolve(document: dict, http) -> list[str]:

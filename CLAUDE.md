@@ -41,6 +41,8 @@ Egyetlen `asyncio` processz (`python -m app`), öt párhuzamos taskkal, amelyeke
 
 Modulok: `main.py` (app + state machine + outcome mérés), `binance_feed.py` (WS/REST I/O + `StreamStats`), `indicators.py` (tiszta függvények: EMA, Wilder ATR, CVD polyfit, VWAP predikátumok, spread, return), `validation.py` (a signal validáció tiszta függvényként, `ValidationResult`), `symbols.py` (`select_symbols` tiszta szűrés/rendezés), `models.py` (`Candle`, `FlowBucket`, `OutcomeTracker`, `SymbolRuntime`), `config.py` (default doc + validáció + `symbolOverrides` merge), `storage.py` (Mongo, indexek, collection bootstrap), `telegram.py`.
 
+Az auto-populate quote asset szűrése konfigurálható (`quoteAsset`, default `USDT`), és a `fetch_symbol_universe` paramétere — ne égesd vissza a kódba.
+
 A futtatandó symbolok listája **nem** a `ShadowSignalApp` dolga: az `async_main` oldja fel (`resolve_symbols`), és konstruktorparaméterként adja át. Auto-populate hibája vagy üres eredménye mindig a `config.symbols`-ra esik vissza — nulla symbollal soha nem indulunk.
 
 A per-symbol állapot teljes egészében egy in-memory `SymbolRuntime` objektumban él (`app.runtimes[symbol]`). A Mongo **nem** state store a stratégia számára: restart után csak a `signals` collection utolsó eleméből áll vissza a COOLDOWN, minden más újraszámolódik REST kline bootstrapből.
@@ -66,7 +68,7 @@ A visszatérés `ValidationResult`: elfogadásnál `snapshot`, elutasításnál 
 
 Egyetlen `config` dokumentum (`_id: "strategy"`), első indításkor a `DEFAULT_CONFIG`-ból jön létre. Meglévő dokumentumba a `Storage.initialize` bemergeli a hiányzó default kulcsokat, így új config mező felvétele nem töri meg a futó telepítést.
 
-`StrategyConfig.for_symbol()` merge-eli a `symbolOverrides`-t — csak az `OVERRIDABLE_KEYS` írható felül. A `GLOBAL_ONLY_KEYS` halmaz mondja meg, mi **nem** kerül bele a per-symbol settingsbe (és ezzel a `signals.configSnapshot`-ba sem): a timeframe-eken túl a `logStatusSec`, `symbolAutoPopulate`, `minQuoteVolume24h`, `maxSymbols`. Új stratégiai paraméter felvételekor: `DEFAULT_CONFIG` + `validate_symbol_settings` + (ha per-symbol) `OVERRIDABLE_KEYS`; új *globális* paraméternél `DEFAULT_CONFIG` + `GLOBAL_ONLY_KEYS` + `validate_config_document`.
+`StrategyConfig.for_symbol()` merge-eli a `symbolOverrides`-t — csak az `OVERRIDABLE_KEYS` írható felül. A `GLOBAL_ONLY_KEYS` halmaz mondja meg, mi **nem** kerül bele a per-symbol settingsbe (és ezzel a `signals.configSnapshot`-ba sem): a timeframe-eken túl a `logStatusSec`, `symbolAutoPopulate`, `quoteAsset`, `minQuoteVolume24h`, `maxSymbols`. Új stratégiai paraméter felvételekor: `DEFAULT_CONFIG` + `validate_symbol_settings` + (ha per-symbol) `OVERRIDABLE_KEYS`; új *globális* paraméternél `DEFAULT_CONFIG` + `GLOBAL_ONLY_KEYS` + `validate_config_document`.
 
 A `cvdLookback` minimuma 3 a kvadratikus polyfit miatt. A `cvd_deltas` deque `maxlen`-je a **bootstrap-kori** `cvdLookback` — lookback növelése futásidőben nem támogatott.
 

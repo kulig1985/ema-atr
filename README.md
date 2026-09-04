@@ -306,6 +306,7 @@ Első induláskor automatikusan létrejön az alábbi dokumentum:
   "symbolOverrides": {},
   "logStatusSec": 60,
   "symbolAutoPopulate": false,
+  "quoteAsset": "USDT",
   "minQuoteVolume24h": 500000000,
   "maxSymbols": 5,
   "updatedAt": null
@@ -365,8 +366,10 @@ Példa:
 `symbolAutoPopulate: true` eseten a program induláskor nem a `symbols` listat hasznalja,
 hanem maga valasztja ki a legforgalmasabb szerzodeseket:
 
-1. `GET /fapi/v1/exchangeInfo` — csak `PERPETUAL`, `TRADING` statuszu, USDT quote asset.
-2. `GET /fapi/v1/ticker/24hr` — a 24 oras `quoteVolume` USDT-ben.
+1. `GET /fapi/v1/exchangeInfo` — csak `PERPETUAL` szerzodes, `TRADING` statusz, es a
+   `quoteAsset` mezo pontosan a configban megadott quote asset (default `USDT`).
+   Minden mas quote asset — USDC, BTC, coin-margined — kimarad.
+2. `GET /fapi/v1/ticker/24hr` — a 24 oras `quoteVolume` a quote assetben.
 3. Szures `minQuoteVolume24h`-ra, rendezes csokkeno forgalom szerint, vagas `maxSymbols`-ra.
 
 A kivalasztott lista a logba es a heartbeatbe kerul. A `config.symbols` mezot **nem**

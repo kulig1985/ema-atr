@@ -15,7 +15,7 @@ def test_default_config_is_valid() -> None:
 
 def test_global_keys_do_not_leak_into_per_symbol_settings() -> None:
     settings = StrategyConfig(document=document()).for_symbol("BTCUSDT")
-    for key in ("logStatusSec", "symbolAutoPopulate", "minQuoteVolume24h", "maxSymbols"):
+    for key in ("logStatusSec", "symbolAutoPopulate", "minQuoteVolume24h", "maxSymbols", "quoteAsset"):
         assert key not in settings
 
 
@@ -37,6 +37,9 @@ def test_the_new_global_keys_cannot_be_overridden_per_symbol() -> None:
         ({"symbolAutoPopulate": "yes"}, "symbolAutoPopulate must be a boolean"),
         ({"minQuoteVolume24h": -1}, "minQuoteVolume24h must be >= 0"),
         ({"maxSymbols": 0}, "maxSymbols must be >= 1"),
+        ({"quoteAsset": ""}, "quoteAsset must be a non-empty string"),
+        ({"quoteAsset": "   "}, "quoteAsset must be a non-empty string"),
+        ({"quoteAsset": 5}, "quoteAsset must be a non-empty string"),
     ],
 )
 def test_rejects_invalid_values_for_the_new_keys(overrides: dict, message: str) -> None:
@@ -52,3 +55,7 @@ def test_reads_the_new_keys_through_typed_properties() -> None:
     assert config.symbol_auto_populate is True
     assert config.min_quote_volume_24h == 1e8
     assert config.max_symbols == 7
+
+
+def test_quote_asset_is_normalised_to_uppercase() -> None:
+    assert StrategyConfig(document=document(quoteAsset="usdt")).quote_asset == "USDT"
