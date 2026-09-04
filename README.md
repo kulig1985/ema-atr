@@ -63,9 +63,14 @@ A config betoltes, automatikus default config letrehozas, collection letrehozas,
 | | Timeframe | Szerep |
 |---|---|---|
 | `entryTimeframe` | 15m | **Ez dont.** Az EMA/ATR ebbol adja a belepo savot mindket iranyba (`lowerEntry` a LONG-hoz, `upperEntry` a SHORT-hoz), es a realtime VWAP ablaka is ez. |
-| `exitTimeframe` | 1h | **Csak tajekoztat.** Egy szamot ad a Telegram uzenetbe es a signal dokumentumba. Nem general signalt, nem zar poziciot, nem befolyasolja a state machine-t. |
+| `exitTimeframe` | 1h | **Csak tajekoztat.** Egy szamot ad a Telegram uzenetbe es a signal dokumentum `exitGuideline.price` mezojebe. Ez a ket hely az egesz kodban, ahol elofordul. |
 
 A CVD ettol fuggetlenul mindig fix 1 perces bucketekbol szamol.
+
+Az "1h kilepesi iranymutato" tehat **nem zar semmit** — nincs is mit zarnia, mert a
+program nem nyit poziciot. Csak annyit mond: az 1h EMA/ATR alapjan itt lenne egy
+ertelmes kiszallasi szint, LONG-nal `EMA1h + xExit * ATR1h` (az ar felett), SHORT-nal
+`EMA1h - xExit * ATR1h` (az ar alatt). Neked szol, ha kezzel kereskedsz utana.
 
 ## State machine
 
@@ -460,13 +465,34 @@ Signal pillanat, ár, entry EMA/ATR/band, 1h guideline, VWAP/CVD/spread validác
 
 #### Outcome mezok es mertekegysegeik
 
-**Minden `returnNm`, `MFE` es `MAE` mezo szazalek**, iranyhoz igazitva: LONG-nal az
-emelkedes, SHORT-nal az esses a pozitiv. Nem tizedes tort — a `0.2575` az **+0.2575%**.
+**Minden `returnNm`, `MFE` es `MAE` mezo szazalek.** Nem tizedes tort — a `0.2575` az
+**+0,2575%**.
+
+**Az elojel mar iranyhoz van igazitva: a pozitiv ertek mindig azt jelenti, hogy a signal
+iranya bejott** — LONG-nal es SHORT-nal egyarant. A program SHORT eseten nem a nyers
+arvaltozast tarolja, hanem annak ellentettjet:
+
+```text
+LONG:   return = (aktualis ar - signal ar) / signal ar * 100
+SHORT:  return = (signal ar - aktualis ar) / signal ar * 100
+```
+
+100-as signal arral:
+
+| Oldal | Ar kesobb | `returnNm` | Jelentes |
+|---|---|---|---|
+| LONG | 101 | +1,0% | jo, az ar emelkedett |
+| LONG | 99 | -1,0% | rossz, az ar esett |
+| SHORT | 99 | +1,0% | jo, az ar esett |
+| SHORT | 101 | -1,0% | rossz, az ar emelkedett |
+
+Ezert lehet a ket iranyt egy atlagba osszevonni: az `MFE` mindig >= 0 (a legjobb
+pillanat), az `MAE` mindig <= 0 (a legrosszabb pillanat), oldaltol fuggetlenul.
 
 | Mezo | Mertekegyseg | Jelentes |
 |---|---|---|
 | `return1m` … `return20m` | % | Az ar valtozasa a signal ota 1 / 3 / 5 / 10 / 15 / 20 perccel. `return10m` = a 10. percnel mert hozam. |
-| `MFE` | % | Maximum Favorable Excursion: a legnagyobb *javunkra* torteno elmozdulas a 20 perces ablakban. |
+| `MFE` | % | Maximum Favorable Excursion: a legnagyobb *javunkra* torteno elmozdulas a 20 perces ablakban. Pozitiv vagy 0. |
 | `MAE` | % | Maximum Adverse Excursion: a legnagyobb *ellenunk* torteno elmozdulas ugyanabban az ablakban. Negativ vagy 0. |
 | `timeToMFE`, `timeToMAE` | masodperc | Mennyi idovel a signal utan kovetkezett be. |
 | `signalPrice` | ar | A signal pillanatanak `aggTrade` ara. |

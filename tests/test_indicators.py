@@ -59,3 +59,11 @@ def test_spread_bps() -> None:
 def test_directional_return_pct() -> None:
     assert directional_return_pct("LONG", 100.0, 101.0) == pytest.approx(1.0)
     assert directional_return_pct("SHORT", 100.0, 99.0) == pytest.approx(1.0)
+
+
+def test_positive_return_always_means_the_signal_direction_worked() -> None:
+    """The sign is direction-adjusted, so both sides are comparable in one average."""
+    assert directional_return_pct("LONG", 100.0, 101.0) > 0   # price up, long wins
+    assert directional_return_pct("LONG", 100.0, 99.0) < 0    # price down, long loses
+    assert directional_return_pct("SHORT", 100.0, 99.0) > 0   # price down, short wins
+    assert directional_return_pct("SHORT", 100.0, 101.0) < 0  # price up, short loses

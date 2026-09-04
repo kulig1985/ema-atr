@@ -26,7 +26,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "symbolAutoPopulate": True,
     "quoteAsset": "USDT",
     "minQuoteVolume24h": 500_000_000,
-    "maxSymbols": 5,
+    "maxSymbols": 20,
     "updatedAt": None,
 }
 
