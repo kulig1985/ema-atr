@@ -70,14 +70,14 @@ def test_duration_is_human_readable(seconds, expected) -> None:
 
 
 def test_band_position_reports_atr_distance_inside_the_band() -> None:
-    assert "ATR above lower band" in band_position(runtime())
+    assert "ATR-rel a sáv alja felett" in band_position(runtime())
 
 
 def test_band_position_reports_distance_below_the_band() -> None:
-    assert "below lower band" in band_position(runtime(price=1.30))
+    assert "ATR-rel a sáv alja alatt" in band_position(runtime(price=1.30))
 
 
-def test_waiting_for_names_the_level_that_must_be_crossed() -> None:
+def test_waiting_for_stays_english_because_it_goes_to_the_log() -> None:
     assert "cross up through" in waiting_for(runtime("LONG_ARMED"))
     assert "cross down through" in waiting_for(runtime("SHORT_ARMED"))
     assert waiting_for(runtime("IDLE")) == "price to leave the entry band"
@@ -87,22 +87,27 @@ def test_waiting_for_names_the_level_that_must_be_crossed() -> None:
 def test_signal_message_explains_every_validation_condition() -> None:
     message = format_signal_message(runtime(), "LONG", 1.3981, NOW, 1.46573117, VALIDATION)
     assert "🟢 <b>LONG · XRPUSDT</b>" in message
-    assert "Why now" in message
-    assert "crossed back above" in message
-    assert "vwap 1.39683" in message
-    assert "slope +0.4965" in message
-    assert "curvature +0.3846" in message
+    assert "<b>Miért</b>" in message
+    # lowerEntry = 1.41801105 - 1.75 * 0.01141185 = 1.39804
+    assert "alulról átlépte a 15m sáv alját (1.39804," in message
+    # The VWAP line must read in the order the condition actually requires.
+    assert "nyitás 1.3965 &lt; VWAP 1.39683 &lt; ár 1.3981" in message
+    assert "meredekség +0.4965" in message
+    assert "görbület +0.3846" in message
+    assert "gyorsuló vételi nyomás" in message
     assert "Spread 0.71 bps (max 10)" in message
     assert "trade 0.1s" in message
-    assert "exit guideline <b>1.465731</b>" in message
-    assert "No order is sent" in message
+    assert "1h kilépési iránymutató: <b>1.465731</b>" in message
+    assert "Nem küld ordert" in message
 
 
 def test_short_signal_message_flips_direction_and_icon() -> None:
     message = format_signal_message(runtime("SHORT_ARMED"), "SHORT", 1.44, NOW, 1.39, VALIDATION)
     assert message.startswith("🔴 <b>SHORT · XRPUSDT</b>")
-    assert "crossed back below" in message
-    assert "sell pressure" in message
+    # upperEntry = 1.41801105 + 1.75 * 0.01141185 = 1.437982
+    assert "felülről átlépte a 15m sáv tetejét (1.437982, +0.14%)" in message
+    assert "ár 1.44 &lt; VWAP 1.39683 &lt; nyitás 1.3965" in message
+    assert "gyorsuló eladói nyomás" in message
 
 
 def signal(**overrides) -> dict:
@@ -165,15 +170,15 @@ def status_message(**overrides) -> str:
 
 def test_status_message_reports_performance_symbols_and_feeds() -> None:
     message = status_message()
-    assert "uptime 2h 14m · 2 symbols" in message
-    assert "2 signals (2 LONG / 0 SHORT)" in message
-    assert "avg 20m return +0.07%" in message
-    assert "best +0.25% SOLUSDT" in message
+    assert "2h 14m óta fut · 2 symbol" in message
+    assert "2 signal (2 LONG / 0 SHORT)" in message
+    assert "átlagos 20 perces hozam +0.07%" in message
+    assert "legjobb +0.25% SOLUSDT" in message
     assert "XRPUSDT LONG_ARMED 1.3981" in message
-    assert "1 measuring" in message
-    assert "SOLUSDT COOLDOWN 101.31 (7m 0s left)" in message
+    assert "1 mérés" in message
+    assert "SOLUSDT COOLDOWN 101.31 (7m 0s van hátra)" in message
     assert "loop lag max 51 ms" in message
 
 
 def test_status_message_says_so_when_nothing_happened() -> None:
-    assert "No signals." in status_message(performance=summarize_signals([]))
+    assert "Nem volt signal." in status_message(performance=summarize_signals([]))

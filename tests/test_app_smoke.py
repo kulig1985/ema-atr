@@ -124,9 +124,9 @@ def test_signal_is_announced_on_telegram(monkeypatch) -> None:
     assert len(telegram.sent) == 1
     message = telegram.sent[0]
     assert f"<b>LONG · {SYMBOL}</b>" in message
-    assert "Why now" in message
-    assert "crossed back above" in message
-    assert "No order is sent" in message
+    assert "<b>Miért</b>" in message
+    assert "alulról átlépte a 15m sáv alját" in message
+    assert "Nem küld ordert" in message
 
 
 async def _drain(app: ShadowSignalApp) -> None:

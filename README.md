@@ -58,6 +58,15 @@ binance-shadow-signal/
 
 A config betoltes, automatikus default config letrehozas, collection letrehozas, symbol beallitas, runtime flow es outcome meres reszletes leirasa a `MUKODES.md` fajlban talalhato.
 
+## Melyik timeframe mire valo
+
+| | Timeframe | Szerep |
+|---|---|---|
+| `entryTimeframe` | 15m | **Ez dont.** Az EMA/ATR ebbol adja a belepo savot mindket iranyba (`lowerEntry` a LONG-hoz, `upperEntry` a SHORT-hoz), es a realtime VWAP ablaka is ez. |
+| `exitTimeframe` | 1h | **Csak tajekoztat.** Egy szamot ad a Telegram uzenetbe es a signal dokumentumba. Nem general signalt, nem zar poziciot, nem befolyasolja a state machine-t. |
+
+A CVD ettol fuggetlenul mindig fix 1 perces bucketekbol szamol.
+
 ## State machine
 
 Symbolonként kizárólag ez a négy stratégiai state létezik:
@@ -389,6 +398,8 @@ erteket figyelni.
 
 Ketfele uzenet megy ki.
 
+Mindketto **magyarul** megy ki (a kod es a log angol marad).
+
 **Signal** — minden kiirt signalnal azonnal. Nem csak az adatokat tartalmazza, hanem azt
 is, hogy *miert* keletkezett: melyik sav szelet lepte at az ar, hol allt a VWAP a
 nyitashoz es az arhoz kepest, mennyi a CVD slope/curvature, a spread es az adatfrissesseg.
@@ -446,6 +457,29 @@ Lezárt 1 perces CVD bucketek: `buyNotional`, `sellNotional`, `delta`, `total`, 
 ### `signals`
 
 Signal pillanat, ár, entry EMA/ATR/band, 1h guideline, VWAP/CVD/spread validáció, config snapshot és outcome mezők.
+
+#### Outcome mezok es mertekegysegeik
+
+**Minden `returnNm`, `MFE` es `MAE` mezo szazalek**, iranyhoz igazitva: LONG-nal az
+emelkedes, SHORT-nal az esses a pozitiv. Nem tizedes tort — a `0.2575` az **+0.2575%**.
+
+| Mezo | Mertekegyseg | Jelentes |
+|---|---|---|
+| `return1m` … `return20m` | % | Az ar valtozasa a signal ota 1 / 3 / 5 / 10 / 15 / 20 perccel. `return10m` = a 10. percnel mert hozam. |
+| `MFE` | % | Maximum Favorable Excursion: a legnagyobb *javunkra* torteno elmozdulas a 20 perces ablakban. |
+| `MAE` | % | Maximum Adverse Excursion: a legnagyobb *ellenunk* torteno elmozdulas ugyanabban az ablakban. Negativ vagy 0. |
+| `timeToMFE`, `timeToMAE` | masodperc | Mennyi idovel a signal utan kovetkezett be. |
+| `signalPrice` | ar | A signal pillanatanak `aggTrade` ara. |
+| `validation.spreadBps` | bazispont | 1 bps = 0,01%. |
+| `validation.tradeAgeSec`, `bookAgeSec` | masodperc | Az adat kora a signal pillanataban. |
+| `measurementStatus` | — | `ACTIVE` (meres fut), `COMPLETED` (20 perc kesz), `INTERRUPTED` (megszakadt, nincs kitalalt ertek). |
+
+A checkpoint ara az elso olyan `aggTrade.price`, amelynek trade timestampje elerte az
+adott idopontot. Ha nem volt trade, a mezo `null` marad.
+
+Pelda: `return20m: 0.2575` egy LONG signalnal azt jelenti, hogy 20 perccel a signal utan
+az ar 0,2575%-kal volt magasabb a signal aranal. Ez **nem** nyereseg: a program nem nyit
+poziciot, nincs koltseg, slippage vagy tokeattet beleszamolva.
 
 ### `heartbeats`
 

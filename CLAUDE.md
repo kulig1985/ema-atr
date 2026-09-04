@@ -79,7 +79,9 @@ Pontosan öt collection: `config`, `candles`, `flow_1m`, `signals`, `heartbeats`
 
 ### Telegram
 
-A `telegram.py` `parse_mode: "HTML"`-lel küld, ezért minden beszúrt szabad szöveget `html.escape`-elni kell a `messages.py`-ban. A szövegformázók tiszta függvények (nincs I/O, `now` paraméterként jön), a `tests/test_messages.py` ezekre állít.
+A `telegram.py` `parse_mode: "HTML"`-lel küld, ezért minden beszúrt szabad szöveget `html.escape`-elni kell a `messages.py`-ban. A `<` és `>` jelet a szövegben `&lt;`/`&gt;`-ként kell írni (a VWAP-sor emiatt így néz ki). A szövegformázók tiszta függvények (nincs I/O, `now` paraméterként jön), a `tests/test_messages.py` ezekre állít.
+
+**A Telegram üzenetek magyarul vannak** — ez tudatos döntés, a felhasználónak szólnak. A logüzenetek és a Mongo mezőnevek maradnak angolul. Ezért van a `messages.py`-ban két hasonló függvény külön nyelven: a `band_position` a Telegram digestbe megy (magyar), a `waiting_for` a `STATUS` logsorba (angol).
 
 ### Diagnosztika
 

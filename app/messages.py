@@ -36,19 +36,19 @@ def format_duration(seconds: float) -> str:
 
 
 def band_position(rt: SymbolRuntime) -> str:
-    """Where the price sits relative to the entry band, in ATR units."""
+    """Where the price sits relative to the entry band (Hungarian: Telegram text)."""
     price, lower, upper, atr = rt.last_price, rt.lower_entry, rt.upper_entry, rt.entry_atr
     if price is None or lower is None or upper is None or not atr:
-        return "no band yet"
+        return "még nincs sáv"
     if price < lower:
-        return f"{(lower - price) / atr:.2f} ATR below lower band"
+        return f"{(lower - price) / atr:.2f} ATR-rel a sáv alja alatt"
     if price > upper:
-        return f"{(price - upper) / atr:.2f} ATR above upper band"
-    return f"{(price - lower) / atr:+.2f} ATR above lower band"
+        return f"{(price - upper) / atr:.2f} ATR-rel a sáv teteje felett"
+    return f"{(price - lower) / atr:+.2f} ATR-rel a sáv alja felett"
 
 
 def waiting_for(rt: SymbolRuntime) -> str:
-    """What has to happen next for this symbol, in plain words."""
+    """What has to happen next for this symbol. English: this one goes to the log."""
     if rt.state == "IDLE":
         return "price to leave the entry band"
     if rt.state == "LONG_ARMED":
@@ -66,40 +66,50 @@ def format_signal_message(
     exit_guideline: float,
     validation: dict[str, Any],
 ) -> str:
-    """The Telegram signal, explaining why it fired."""
+    """The Telegram signal in Hungarian, explaining why it fired."""
     icon = "🟢" if side == "LONG" else "🔴"
-    band_edge = rt.lower_entry if side == "LONG" else rt.upper_entry
-    crossed_pct = (price - band_edge) / band_edge * 100.0 if band_edge else 0.0
-    direction = "above" if side == "LONG" else "below"
-    cvd_note = "buy pressure accelerating" if side == "LONG" else "sell pressure accelerating"
     entry_tf = html.escape(str(rt.settings["entryTimeframe"]))
     exit_tf = html.escape(str(rt.settings["exitTimeframe"]))
+    open_price = format_price(validation["candleOpen"])
+    vwap = format_price(validation["vwap"])
+    shown_price = format_price(price)
 
-    lines = [
-        f"{icon} <b>{html.escape(side)} · {html.escape(rt.symbol)}</b>",
-        f"Price <b>{format_price(price)}</b> · {signal_at:%H:%M:%S} UTC",
-        "",
-        "<b>Why now</b>",
-        f"• Re-entry: price crossed back {direction} the {entry_tf} band edge "
-        f"{format_price(band_edge)} ({crossed_pct:+.2f}%)",
-        f"• VWAP: open {format_price(validation['candleOpen'])}"
-        f" · vwap {format_price(validation['vwap'])} · price {format_price(price)}",
-        f"• CVD: slope {validation['cvdSlope']:+.4f}, curvature {validation['cvdCurvature']:+.4f}"
-        f" ({cvd_note})",
-        f"• Spread {validation['spreadBps']:.2f} bps (max {float(rt.settings['maxSpreadBps']):.0f})",
-        f"• Data age: trade {validation['tradeAgeSec']:.1f}s · book {validation['bookAgeSec']:.1f}s",
-        "",
-        "<b>Levels</b>",
-        f"• {entry_tf} EMA {format_price(rt.entry_ema)} · ATR {format_price(rt.entry_atr)}"
-        f" · x {float(rt.settings['xEntry']):g}",
-        f"• Entry band {format_price(rt.lower_entry)} – {format_price(rt.upper_entry)}",
-        f"• {exit_tf} exit guideline <b>{format_price(exit_guideline)}</b>"
-        f" (EMA {format_price(rt.exit_ema)}, ATR {format_price(rt.exit_atr)},"
-        f" x {float(rt.settings['xExit']):g})",
-        "",
-        f"<i>No order is sent. Outcome is measured for 20 minutes.</i>",
-    ]
-    return "\n".join(lines)
+    if side == "LONG":
+        band_edge = rt.lower_entry
+        crossing = f"az ár alulról átlépte a {entry_tf} sáv alját"
+        vwap_order = f"nyitás {open_price} &lt; VWAP {vwap} &lt; ár {shown_price}"
+        flow = "gyorsuló vételi nyomás"
+    else:
+        band_edge = rt.upper_entry
+        crossing = f"az ár felülről átlépte a {entry_tf} sáv tetejét"
+        vwap_order = f"ár {shown_price} &lt; VWAP {vwap} &lt; nyitás {open_price}"
+        flow = "gyorsuló eladói nyomás"
+
+    crossed_pct = (price - band_edge) / band_edge * 100.0 if band_edge else 0.0
+
+    return "\n".join(
+        [
+            f"{icon} <b>{html.escape(side)} · {html.escape(rt.symbol)}</b>",
+            f"Ár <b>{shown_price}</b> · {signal_at:%H:%M:%S} UTC",
+            "",
+            "<b>Miért</b>",
+            f"• Visszalépés: {crossing} ({format_price(band_edge)}, {crossed_pct:+.2f}%)",
+            f"• VWAP: {vwap_order}",
+            f"• CVD: meredekség {validation['cvdSlope']:+.4f},"
+            f" görbület {validation['cvdCurvature']:+.4f} — {flow}",
+            f"• Spread {validation['spreadBps']:.2f} bps"
+            f" (max {float(rt.settings['maxSpreadBps']):.0f})"
+            f" · adat: trade {validation['tradeAgeSec']:.1f}s, book {validation['bookAgeSec']:.1f}s",
+            "",
+            "<b>Szintek</b>",
+            f"• {entry_tf} sáv: {format_price(rt.lower_entry)} – {format_price(rt.upper_entry)}"
+            f" (EMA {format_price(rt.entry_ema)}, ATR {format_price(rt.entry_atr)},"
+            f" x{float(rt.settings['xEntry']):g})",
+            f"• {exit_tf} kilépési iránymutató: <b>{format_price(exit_guideline)}</b>",
+            "",
+            "<i>Nem küld ordert. 20 percig méri az ármozgást.</i>",
+        ]
+    )
 
 
 def summarize_signals(signals: list[dict[str, Any]]) -> dict[str, Any]:
@@ -138,47 +148,47 @@ def format_status_message(
     max_loop_lag_sec: float,
     performance: dict[str, Any],
 ) -> str:
-    """The periodic Telegram status digest."""
+    """The periodic Telegram digest, in Hungarian."""
     lines = [
-        "📊 <b>Shadow Signal status</b>",
-        f"{now:%Y-%m-%d %H:%M} UTC · uptime {format_duration(uptime_sec)}"
-        f" · {len(runtimes)} symbols",
+        "📊 <b>Shadow Signal állapot</b>",
+        f"{now:%Y-%m-%d %H:%M} UTC · {format_duration(uptime_sec)} óta fut"
+        f" · {len(runtimes)} symbol",
         "",
-        "<b>Last 24h</b>",
+        "<b>Elmúlt 24 óra</b>",
     ]
 
     if performance["total"] == 0:
-        lines.append("No signals.")
+        lines.append("Nem volt signal.")
     else:
         lines.append(
-            f"{performance['total']} signals "
+            f"{performance['total']} signal "
             f"({performance['long']} LONG / {performance['short']} SHORT)"
         )
         if performance["measured"]:
             lines.append(
-                f"{performance['measured']} measured · avg 20m return "
+                f"{performance['measured']} lemérve · átlagos 20 perces hozam "
                 f"{performance['avg_return']:+.2f}% · "
-                f"{performance['positive']} up / {performance['negative']} down"
+                f"{performance['positive']} pozitív / {performance['negative']} negatív"
             )
             best_value, best_symbol = performance["best"]
             worst_value, worst_symbol = performance["worst"]
             lines.append(
-                f"best {best_value:+.2f}% {html.escape(best_symbol)} · "
-                f"worst {worst_value:+.2f}% {html.escape(worst_symbol)}"
+                f"legjobb {best_value:+.2f}% {html.escape(best_symbol)} · "
+                f"legrosszabb {worst_value:+.2f}% {html.escape(worst_symbol)}"
             )
         if performance["active"] or performance["interrupted"]:
             lines.append(
-                f"{performance['active']} measuring · "
-                f"{performance['interrupted']} interrupted"
+                f"{performance['active']} mérés folyamatban · "
+                f"{performance['interrupted']} megszakadt"
             )
 
-    lines += ["", "<b>Symbols</b>"]
+    lines += ["", "<b>Symbolok</b>"]
     for symbol, rt in runtimes.items():
         detail = band_position(rt)
         if rt.state == "COOLDOWN" and rt.cooldown_until is not None:
-            detail = f"{format_duration((rt.cooldown_until - now).total_seconds())} left"
+            detail = f"{format_duration((rt.cooldown_until - now).total_seconds())} van hátra"
         measuring = active_measurements.get(symbol, 0)
-        suffix = f" · {measuring} measuring" if measuring else ""
+        suffix = f" · {measuring} mérés" if measuring else ""
         lines.append(
             f"{html.escape(symbol)} {rt.state} {format_price(rt.last_price)}"
             f" ({detail}){suffix}"
@@ -186,7 +196,7 @@ def format_status_message(
 
     lines += [
         "",
-        "<b>Feeds</b>",
+        "<b>Adatfolyam</b>",
         f"market {html.escape(market_summary)}",
         f"public {html.escape(public_summary)}",
         f"loop lag max {max_loop_lag_sec * 1000:.0f} ms",
