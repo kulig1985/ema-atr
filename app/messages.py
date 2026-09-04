@@ -120,6 +120,17 @@ def summarize_signals(signals: list[dict[str, Any]]) -> dict[str, Any]:
         for s in completed
         if s.get("return20m") is not None
     ]
+    mfes = [float(s["MFE"]) for s in completed if s.get("MFE") is not None]
+    maes = [float(s["MAE"]) for s in completed if s.get("MAE") is not None]
+    peak_times = [float(s["timeToMFE"]) for s in completed if s.get("timeToMFE")]
+    adverse_first = sum(
+        1
+        for s in completed
+        if s.get("timeToMAE") and s.get("timeToMFE") and s["timeToMAE"] < s["timeToMFE"]
+    )
+    avg_return = sum(value for value, _symbol in returns) / len(returns) if returns else None
+    avg_mfe = sum(mfes) / len(mfes) if mfes else None
+
     summary: dict[str, Any] = {
         "total": len(signals),
         "long": sum(1 for s in signals if s.get("side") == "LONG"),
@@ -130,11 +141,64 @@ def summarize_signals(signals: list[dict[str, Any]]) -> dict[str, Any]:
         "measured": len(returns),
         "positive": sum(1 for value, _symbol in returns if value > 0),
         "negative": sum(1 for value, _symbol in returns if value < 0),
-        "avg_return": sum(value for value, _symbol in returns) / len(returns) if returns else None,
+        "avg_return": avg_return,
         "best": max(returns) if returns else None,
         "worst": min(returns) if returns else None,
+        "avg_mfe": avg_mfe,
+        "avg_mae": sum(maes) / len(maes) if maes else None,
+        "worst_mae": min(maes) if maes else None,
+        "avg_time_to_mfe": sum(peak_times) / len(peak_times) if peak_times else None,
+        "adverse_first": adverse_first,
+        # Share of the best moment still held at the 20 minute mark.
+        "capture": (avg_return / avg_mfe) if (avg_mfe and avg_return is not None) else None,
     }
     return summary
+
+
+def interpret_performance(summary: dict[str, Any]) -> list[str]:
+    """Read the MFE/MAE aggregates back as plain Hungarian sentences."""
+    if not summary.get("measured") or summary.get("avg_mfe") is None:
+        return []
+
+    avg_mfe = summary["avg_mfe"]
+    avg_mae = summary["avg_mae"] or 0.0
+    lines = [
+        f"A signalok átlagosan {avg_mfe:+.2f}%-ig jutottak, "
+        f"és közben {avg_mae:.2f}%-ot mentek ellened."
+    ]
+
+    if summary["avg_time_to_mfe"]:
+        lines.append(
+            f"A csúcs átlagosan {format_duration(summary['avg_time_to_mfe'])}-cel "
+            f"a signal után jött."
+        )
+
+    capture = summary["capture"]
+    if capture is not None:
+        if capture <= 0:
+            lines.append("A 20. percre átlagosan veszteségbe fordultak.")
+        elif capture < 0.4:
+            lines.append(
+                f"A csúcsnak csak a {capture * 100:.0f}%-át tartották meg a 20. percre — "
+                "a többit visszaadták, a 20 perc hosszú ablaknak tűnik."
+            )
+        elif capture < 0.8:
+            lines.append(
+                f"A csúcs {capture * 100:.0f}%-a maradt meg a 20. percre, "
+                "a többit visszaadták."
+            )
+        else:
+            lines.append("A 20. percre nagyjából a csúcs közelében zártak.")
+
+    if abs(avg_mae) > avg_mfe > 0:
+        lines.append(
+            "Az átlagos visszaesés nagyobb volt, mint az elért csúcs — "
+            "a belépések korainak tűnnek."
+        )
+
+    if summary["measured"] < 5:
+        lines.append(f"({summary['measured']} lemért signal — kevés minta, óvatosan.)")
+    return lines
 
 
 def format_status_message(
@@ -181,6 +245,10 @@ def format_status_message(
                 f"{performance['active']} mérés folyamatban · "
                 f"{performance['interrupted']} megszakadt"
             )
+
+    interpretation = interpret_performance(performance)
+    if interpretation:
+        lines += ["", "<b>Mit mutat</b>"] + interpretation
 
     lines += ["", "<b>Symbolok</b>"]
     for symbol, rt in runtimes.items():

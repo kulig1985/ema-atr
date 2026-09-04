@@ -416,6 +416,18 @@ Tartalma: az elmult 24 ora signaljai (darabszam, LONG/SHORT bontas, atlagos 20 p
 hozam, nyeresges/veszteseges arany, legjobb es legrosszabb), symbolonkent az aktualis
 state es a savtol mert tavolsag ATR-ben, valamint a stream egeszseg es a loop lag.
 
+A **"Mit mutat"** blokk az MFE/MAE adatokat olvassa vissza magyarul: meddig jutottak
+atlagosan a signalok, mennyit mentek kozben ellened, mikor jott a csucs, es a csucsnak
+mekkora resze maradt meg a 20. percre (`capture` = atlagos `return20m` / atlagos `MFE`).
+
+- `capture` >= 0,8 — a signalok a csucs kozeleben zartak
+- 0,4–0,8 — a csucs egy reszet visszaadtak
+- < 0,4 — a mozgas nagy reszet visszaadtak, a 20 perc hosszu ablaknak tunik
+- <= 0 — atlagosan vesztesegbe fordultak
+
+Ha az atlagos `MAE` abszolut erteke nagyobb az atlagos `MFE`-nel, kulon sor jelzi, hogy a
+belepesek korainak tunnek. Ot lemert signal alatt a blokk kiirja, hogy keves a minta.
+
 A `telegramStatusSec` **nem** azonos a `heartbeatSec`-kel: utobbi a Mongo `heartbeats`
 collectionbe ir, es nem kuld Telegram uzenetet.
 

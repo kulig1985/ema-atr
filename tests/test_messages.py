@@ -6,6 +6,7 @@ import pytest
 
 from app.messages import (
     band_position,
+    interpret_performance,
     format_duration,
     format_price,
     format_signal_message,
@@ -182,3 +183,80 @@ def test_status_message_reports_performance_symbols_and_feeds() -> None:
 
 def test_status_message_says_so_when_nothing_happened() -> None:
     assert "Nem volt signal." in status_message(performance=summarize_signals([]))
+
+
+# --- path quality (MFE/MAE) aggregation and its plain-language reading ---
+
+
+def measured(**overrides) -> dict:
+    base = {
+        "symbol": "SOLUSDT",
+        "side": "LONG",
+        "measurementStatus": "COMPLETED",
+        "return20m": 0.2575,
+        "MFE": 0.307,
+        "MAE": -0.2278,
+        "timeToMFE": 1132.6,
+        "timeToMAE": 79.9,
+    }
+    return {**base, **overrides}
+
+
+def test_summary_aggregates_the_path_metrics() -> None:
+    summary = summarize_signals([measured(), measured(MFE=0.5, MAE=-0.1, timeToMFE=600.0)])
+    assert summary["avg_mfe"] == pytest.approx(0.4035)
+    assert summary["avg_mae"] == pytest.approx(-0.1639)
+    assert summary["avg_time_to_mfe"] == pytest.approx(866.3)
+    assert summary["worst_mae"] == pytest.approx(-0.2278)
+    # Both signals dipped before they peaked.
+    assert summary["adverse_first"] == 2
+
+
+def test_capture_is_the_share_of_the_peak_still_held_at_20_minutes() -> None:
+    summary = summarize_signals([measured(return20m=0.15, MFE=0.30)])
+    assert summary["capture"] == pytest.approx(0.5)
+
+
+def test_capture_is_undefined_when_nothing_ever_moved_in_our_favour() -> None:
+    assert summarize_signals([measured(MFE=0.0, return20m=-0.1)])["capture"] is None
+
+
+def test_interpretation_reports_reach_and_drawdown() -> None:
+    text = " ".join(interpret_performance(summarize_signals([measured()] * 6)))
+    assert "+0.31%-ig jutottak" in text
+    assert "-0.23%-ot mentek ellened" in text
+    assert "18m 52s" in text  # 1132.6s, truncated by format_duration
+
+
+def test_interpretation_flags_giving_back_most_of_the_move() -> None:
+    signals = [measured(return20m=0.05, MFE=0.60)] * 6
+    text = " ".join(interpret_performance(summarize_signals(signals)))
+    assert "visszaadták" in text
+    assert "20 perc hosszú ablaknak tűnik" in text
+
+
+def test_interpretation_praises_holding_the_peak() -> None:
+    signals = [measured(return20m=0.29, MFE=0.30)] * 6
+    text = " ".join(interpret_performance(summarize_signals(signals)))
+    assert "csúcs közelében zártak" in text
+
+
+def test_interpretation_warns_when_drawdown_exceeds_the_reach() -> None:
+    signals = [measured(return20m=-0.4, MFE=0.1, MAE=-0.9)] * 6
+    text = " ".join(interpret_performance(summarize_signals(signals)))
+    assert "nagyobb volt, mint az elért csúcs" in text
+
+
+def test_interpretation_says_when_the_sample_is_too_small_to_trust() -> None:
+    text = " ".join(interpret_performance(summarize_signals([measured()] * 2)))
+    assert "kevés minta" in text
+
+
+def test_no_interpretation_without_completed_measurements() -> None:
+    assert interpret_performance(summarize_signals([])) == []
+
+
+def test_status_message_includes_the_interpretation() -> None:
+    message = status_message(performance=summarize_signals([measured()] * 6))
+    assert "<b>Mit mutat</b>" in message
+    assert "jutottak" in message
