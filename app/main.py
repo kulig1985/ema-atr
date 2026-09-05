@@ -32,6 +32,7 @@ from .indicators import (
 from .messages import (
     STATS_WINDOW,
     format_price,
+    format_signal_detail_messages,
     format_signal_message,
     format_status_message,
     summarize_signals,
@@ -677,7 +678,14 @@ class ShadowSignalApp:
             performance=summarize_signals(signals),
         )
         await self.telegram.send(text)
-        logger.info("Telegram status digest sent (%d signals in the last 24h)", len(signals))
+        details = format_signal_detail_messages(signals)
+        for message in details:
+            await self.telegram.send(message)
+        logger.info(
+            "Telegram status digest sent (%d signals in the last 24h, %d detail message(s))",
+            len(signals),
+            len(details),
+        )
 
     async def loop_lag_loop(self) -> None:
         """Measure how late a 1s sleep wakes up: high values mean a saturated event loop."""

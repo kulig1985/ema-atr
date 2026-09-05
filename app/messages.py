@@ -35,16 +35,28 @@ def format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
-def band_position(rt: SymbolRuntime) -> str:
-    """Where the price sits relative to the entry band (Hungarian: Telegram text)."""
-    price, lower, upper, atr = rt.last_price, rt.lower_entry, rt.upper_entry, rt.entry_atr
-    if price is None or lower is None or upper is None or not atr:
-        return "még nincs sáv"
-    if price < lower:
-        return f"{(lower - price) / atr:.2f} ATR-rel a sáv alja alatt"
-    if price > upper:
-        return f"{(price - upper) / atr:.2f} ATR-rel a sáv teteje felett"
-    return f"{(price - lower) / atr:+.2f} ATR-rel a sáv alja felett"
+def band_distance_atr(rt: SymbolRuntime) -> float | None:
+    """Signed distance from the lower band edge, in ATR units."""
+    price, lower, atr = rt.last_price, rt.lower_entry, rt.entry_atr
+    if price is None or lower is None or not atr:
+        return None
+    return (price - lower) / atr
+
+
+def render_table(headers: list[str], rows: list[list[str]]) -> str:
+    """Narrow monospace table for Telegram: space padded, no box drawing."""
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i])
+        for i in range(len(headers))
+    ]
+
+    def line(cells: list[str]) -> str:
+        # The last column is not padded, so the table stays as narrow as the data.
+        padded = [cell.ljust(widths[i]) for i, cell in enumerate(cells)]
+        return html.escape("  ".join(padded).rstrip())
+
+    body = "\n".join(line(row) for row in rows)
+    return f"<pre>{line(headers)}\n{body}</pre>"
 
 
 def waiting_for(rt: SymbolRuntime) -> str:
@@ -112,6 +124,30 @@ def format_signal_message(
     )
 
 
+CHECKPOINTS: tuple[tuple[str, str], ...] = (
+    ("1m", "return1m"),
+    ("3m", "return3m"),
+    ("5m", "return5m"),
+    ("10m", "return10m"),
+    ("15m", "return15m"),
+    ("20m", "return20m"),
+)
+
+
+def checkpoint_price(signal_price: float, side: str, return_pct: float | None) -> float | None:
+    """Rebuild the checkpoint price from the stored return.
+
+    Mongo keeps only the direction-adjusted percentages, so this inverts
+    indicators.directional_return_pct exactly:
+        LONG   r = (p - s) / s * 100  ->  p = s * (1 + r/100)
+        SHORT  r = (s - p) / s * 100  ->  p = s * (1 - r/100)
+    """
+    if return_pct is None:
+        return None
+    factor = 1.0 + float(return_pct) / 100.0 if side == "LONG" else 1.0 - float(return_pct) / 100.0
+    return float(signal_price) * factor
+
+
 def summarize_signals(signals: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate recent signal documents into the numbers worth reporting."""
     completed = [s for s in signals if s.get("measurementStatus") == "COMPLETED"]
@@ -123,15 +159,21 @@ def summarize_signals(signals: list[dict[str, Any]]) -> dict[str, Any]:
     mfes = [float(s["MFE"]) for s in completed if s.get("MFE") is not None]
     maes = [float(s["MAE"]) for s in completed if s.get("MAE") is not None]
     peak_times = [float(s["timeToMFE"]) for s in completed if s.get("timeToMFE")]
-    adverse_first = sum(
-        1
-        for s in completed
-        if s.get("timeToMAE") and s.get("timeToMFE") and s["timeToMAE"] < s["timeToMFE"]
-    )
-    avg_return = sum(value for value, _symbol in returns) / len(returns) if returns else None
-    avg_mfe = sum(mfes) / len(mfes) if mfes else None
 
-    summary: dict[str, Any] = {
+    checkpoints = []
+    for label, field in CHECKPOINTS:
+        values = [float(s[field]) for s in completed if s.get(field) is not None]
+        checkpoints.append(
+            {
+                "label": label,
+                "count": len(values),
+                "avg": sum(values) / len(values) if values else None,
+                "positive": sum(1 for value in values if value > 0),
+                "negative": sum(1 for value in values if value < 0),
+            }
+        )
+
+    return {
         "total": len(signals),
         "long": sum(1 for s in signals if s.get("side") == "LONG"),
         "short": sum(1 for s in signals if s.get("side") == "SHORT"),
@@ -141,64 +183,14 @@ def summarize_signals(signals: list[dict[str, Any]]) -> dict[str, Any]:
         "measured": len(returns),
         "positive": sum(1 for value, _symbol in returns if value > 0),
         "negative": sum(1 for value, _symbol in returns if value < 0),
-        "avg_return": avg_return,
+        "avg_return": sum(value for value, _symbol in returns) / len(returns) if returns else None,
         "best": max(returns) if returns else None,
         "worst": min(returns) if returns else None,
-        "avg_mfe": avg_mfe,
+        "avg_mfe": sum(mfes) / len(mfes) if mfes else None,
         "avg_mae": sum(maes) / len(maes) if maes else None,
-        "worst_mae": min(maes) if maes else None,
         "avg_time_to_mfe": sum(peak_times) / len(peak_times) if peak_times else None,
-        "adverse_first": adverse_first,
-        # Share of the best moment still held at the 20 minute mark.
-        "capture": (avg_return / avg_mfe) if (avg_mfe and avg_return is not None) else None,
+        "checkpoints": checkpoints,
     }
-    return summary
-
-
-def interpret_performance(summary: dict[str, Any]) -> list[str]:
-    """Read the MFE/MAE aggregates back as plain Hungarian sentences."""
-    if not summary.get("measured") or summary.get("avg_mfe") is None:
-        return []
-
-    avg_mfe = summary["avg_mfe"]
-    avg_mae = summary["avg_mae"] or 0.0
-    lines = [
-        f"A signalok átlagosan {avg_mfe:+.2f}%-ig jutottak, "
-        f"és közben {avg_mae:.2f}%-ot mentek ellened."
-    ]
-
-    if summary["avg_time_to_mfe"]:
-        lines.append(
-            f"A csúcs átlagosan {format_duration(summary['avg_time_to_mfe'])}-cel "
-            f"a signal után jött."
-        )
-
-    capture = summary["capture"]
-    if capture is not None:
-        if capture <= 0:
-            lines.append("A 20. percre átlagosan veszteségbe fordultak.")
-        elif capture < 0.4:
-            lines.append(
-                f"A csúcsnak csak a {capture * 100:.0f}%-át tartották meg a 20. percre — "
-                "a többit visszaadták, a 20 perc hosszú ablaknak tűnik."
-            )
-        elif capture < 0.8:
-            lines.append(
-                f"A csúcs {capture * 100:.0f}%-a maradt meg a 20. percre, "
-                "a többit visszaadták."
-            )
-        else:
-            lines.append("A 20. percre nagyjából a csúcs közelében zártak.")
-
-    if abs(avg_mae) > avg_mfe > 0:
-        lines.append(
-            "Az átlagos visszaesés nagyobb volt, mint az elért csúcs — "
-            "a belépések korainak tűnnek."
-        )
-
-    if summary["measured"] < 5:
-        lines.append(f"({summary['measured']} lemért signal — kevés minta, óvatosan.)")
-    return lines
 
 
 def format_status_message(
@@ -246,21 +238,46 @@ def format_status_message(
                 f"{performance['interrupted']} megszakadt"
             )
 
-    interpretation = interpret_performance(performance)
-    if interpretation:
-        lines += ["", "<b>Mit mutat</b>"] + interpretation
+    checkpoints = [c for c in performance["checkpoints"] if c["count"]]
+    if checkpoints:
+        lines += ["", "<b>Összesített lefutás</b>"]
+        lines.append(
+            render_table(
+                ["Idő", "Átlag", "+", "-"],
+                [
+                    [
+                        c["label"],
+                        f"{c['avg']:+.2f}%",
+                        str(c["positive"]),
+                        str(c["negative"]),
+                    ]
+                    for c in checkpoints
+                ],
+            )
+        )
+        footer = []
+        if performance["avg_mfe"] is not None:
+            footer.append(["MFE átlag", f"{performance['avg_mfe']:+.2f}%"])
+        if performance["avg_mae"] is not None:
+            footer.append(["MAE átlag", f"{performance['avg_mae']:+.2f}%"])
+        if performance["avg_time_to_mfe"] is not None:
+            footer.append(["timeToMFE átl.", format_duration(performance["avg_time_to_mfe"])])
+        if footer:
+            lines.append(render_table(["", ""], footer))
 
     lines += ["", "<b>Symbolok</b>"]
+    symbol_rows = []
     for symbol, rt in runtimes.items():
-        detail = band_position(rt)
         if rt.state == "COOLDOWN" and rt.cooldown_until is not None:
-            detail = f"{format_duration((rt.cooldown_until - now).total_seconds())} van hátra"
+            note = format_duration((rt.cooldown_until - now).total_seconds())
+        else:
+            distance = band_distance_atr(rt)
+            note = f"{distance:+.2f}" if distance is not None else "-"
         measuring = active_measurements.get(symbol, 0)
-        suffix = f" · {measuring} mérés" if measuring else ""
-        lines.append(
-            f"{html.escape(symbol)} {rt.state} {format_price(rt.last_price)}"
-            f" ({detail}){suffix}"
+        symbol_rows.append(
+            [symbol, rt.state, format_price(rt.last_price), note, str(measuring) if measuring else ""]
         )
+    lines.append(render_table(["Symbol", "State", "Ár", "Sáv", "M"], symbol_rows))
 
     lines += [
         "",
@@ -270,3 +287,90 @@ def format_status_message(
         f"loop lag max {max_loop_lag_sec * 1000:.0f} ms",
     ]
     return "\n".join(lines)
+
+
+TELEGRAM_SAFE_LIMIT = 3900
+MAX_DETAIL_MESSAGES = 10
+
+
+def format_completed_signal_block(document: dict[str, Any]) -> str:
+    """Full 20 minute walk of one COMPLETED signal."""
+    symbol = str(document.get("symbol", "?"))
+    side = str(document.get("side", "?"))
+    signal_price = float(document["signalPrice"])
+    signal_at = document.get("signalAt")
+    icon = "🟢" if side == "LONG" else "🔴"
+
+    rows = []
+    for label, field in CHECKPOINTS:
+        value = document.get(field)
+        price = checkpoint_price(signal_price, side, value)
+        rows.append(
+            [
+                label,
+                format_price(price) if price is not None else "-",
+                f"{float(value):+.2f}%" if value is not None else "-",
+            ]
+        )
+
+    lines = [
+        f"{icon} <b>{html.escape(symbol)} {html.escape(side)}</b>",
+        f"{signal_at:%Y-%m-%d %H:%M:%S} UTC" if signal_at else "időpont ismeretlen",
+        f"Belépő ár: {format_price(signal_price)}",
+        render_table(["Idő", "Ár", "Return"], rows),
+    ]
+
+    mfe, mae = document.get("MFE"), document.get("MAE")
+    if mfe is not None:
+        lines.append(f"MFE {float(mfe):+.2f}% @ {format_duration(document.get('timeToMFE') or 0)}")
+    if mae is not None:
+        lines.append(f"MAE {float(mae):+.2f}% @ {format_duration(document.get('timeToMAE') or 0)}")
+    return "\n".join(lines)
+
+
+def format_signal_detail_messages(
+    signals: list[dict[str, Any]],
+    limit: int = TELEGRAM_SAFE_LIMIT,
+    max_messages: int = MAX_DETAIL_MESSAGES,
+) -> list[str]:
+    """Pack every COMPLETED signal into Telegram sized messages, newest first.
+
+    A single signal block is never split across two messages.
+    """
+    completed = sorted(
+        (s for s in signals if s.get("measurementStatus") == "COMPLETED"),
+        key=lambda s: s.get("signalAt") or datetime.min,
+        reverse=True,
+    )
+    if not completed:
+        return []
+
+    blocks = [format_completed_signal_block(document) for document in completed]
+
+    # Group blocks into pages first, so the "(n/m)" header knows the total.
+    pages: list[list[str]] = []
+    current: list[str] = []
+    current_len = 40  # rough room for the page header
+    for block in blocks:
+        addition = len(block) + 2
+        if current and current_len + addition > limit:
+            pages.append(current)
+            current, current_len = [], 40
+        current.append(block)
+        current_len += addition
+    if current:
+        pages.append(current)
+
+    dropped = 0
+    if len(pages) > max_messages:
+        dropped = sum(len(page) for page in pages[max_messages:])
+        pages = pages[:max_messages]
+
+    messages = []
+    for index, page in enumerate(pages, start=1):
+        header = f"📄 <b>Lefutások ({index}/{len(pages)})</b>"
+        body = "\n\n".join(page)
+        if dropped and index == len(pages):
+            body += f"\n\n<i>+{dropped} további lefutás nem fért ki.</i>"
+        messages.append(f"{header}\n\n{body}")
+    return messages

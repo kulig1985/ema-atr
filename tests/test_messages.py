@@ -5,12 +5,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.messages import (
-    band_position,
-    interpret_performance,
+    band_distance_atr,
+    checkpoint_price,
+    format_completed_signal_block,
+    format_signal_detail_messages,
     format_duration,
     format_price,
     format_signal_message,
     format_status_message,
+    render_table,
     summarize_signals,
     waiting_for,
 )
@@ -70,14 +73,6 @@ def test_duration_is_human_readable(seconds, expected) -> None:
     assert format_duration(seconds) == expected
 
 
-def test_band_position_reports_atr_distance_inside_the_band() -> None:
-    assert "ATR-rel a sáv alja felett" in band_position(runtime())
-
-
-def test_band_position_reports_distance_below_the_band() -> None:
-    assert "ATR-rel a sáv alja alatt" in band_position(runtime(price=1.30))
-
-
 def test_waiting_for_stays_english_because_it_goes_to_the_log() -> None:
     assert "cross up through" in waiting_for(runtime("LONG_ARMED"))
     assert "cross down through" in waiting_for(runtime("SHORT_ARMED"))
@@ -117,6 +112,9 @@ def signal(**overrides) -> dict:
         "side": "LONG",
         "measurementStatus": "COMPLETED",
         "return20m": 0.25,
+        "MFE": 0.3,
+        "MAE": -0.1,
+        "timeToMFE": 600.0,
     }
     return {**base, **overrides}
 
@@ -175,24 +173,103 @@ def test_status_message_reports_performance_symbols_and_feeds() -> None:
     assert "2 signal (2 LONG / 0 SHORT)" in message
     assert "átlagos 20 perces hozam +0.07%" in message
     assert "legjobb +0.25% SOLUSDT" in message
-    assert "XRPUSDT LONG_ARMED 1.3981" in message
-    assert "1 mérés" in message
-    assert "SOLUSDT COOLDOWN 101.31 (7m 0s van hátra)" in message
+    assert "XRPUSDT" in message and "LONG_ARMED" in message and "1.3981" in message
+    assert "SOLUSDT" in message and "COOLDOWN" in message and "7m 0s" in message
     assert "loop lag max 51 ms" in message
+    assert "Mit mutat" not in message
 
 
 def test_status_message_says_so_when_nothing_happened() -> None:
     assert "Nem volt signal." in status_message(performance=summarize_signals([]))
 
 
-# --- path quality (MFE/MAE) aggregation and its plain-language reading ---
+def test_status_message_shows_the_checkpoint_table_from_completed_signals() -> None:
+    completed = [
+        signal(return1m=0.1, return3m=0.2, return20m=0.2575),
+        signal(symbol="XRPUSDT", return1m=-0.05, return3m=0.1, return20m=-0.1),
+    ]
+    message = status_message(performance=summarize_signals(completed))
+    assert "Összesített lefutás" in message
+    assert "<pre>" in message
+    assert "1m" in message and "3m" in message and "20m" in message
+    assert "MFE átlag" in message
+    assert "MAE átlag" in message
 
 
-def measured(**overrides) -> dict:
+def test_status_message_uses_real_state_names_only() -> None:
+    message = status_message()
+    for fake_state in ("WAIT", "SHORT_A"):
+        assert fake_state not in message
+    for real_state in ("LONG_ARMED", "COOLDOWN"):
+        assert real_state in message
+
+
+def test_checkpoint_price_round_trips_through_directional_return_pct() -> None:
+    from app.indicators import directional_return_pct
+
+    for side, price, actual in (("LONG", 100.0, 101.3), ("SHORT", 100.0, 97.5)):
+        r = directional_return_pct(side, price, actual)
+        rebuilt = checkpoint_price(price, side, r)
+        assert rebuilt == pytest.approx(actual)
+
+
+def test_checkpoint_price_is_none_without_a_stored_return() -> None:
+    assert checkpoint_price(100.0, "LONG", None) is None
+
+
+def test_summarize_signals_builds_checkpoint_averages_from_completed_only() -> None:
+    signals = [
+        signal(return1m=0.2, measurementStatus="COMPLETED"),
+        signal(return1m=0.4, measurementStatus="COMPLETED"),
+        signal(return1m=99.0, measurementStatus="ACTIVE"),
+    ]
+    checkpoints = summarize_signals(signals)["checkpoints"]
+    one_minute = next(c for c in checkpoints if c["label"] == "1m")
+    assert one_minute["count"] == 2
+    assert one_minute["avg"] == pytest.approx(0.3)
+    assert one_minute["positive"] == 2
+    assert one_minute["negative"] == 0
+
+
+def test_summarize_signals_checkpoint_ignores_missing_values() -> None:
+    signals = [signal(return1m=0.5), signal(return1m=None)]
+    one_minute = next(c for c in summarize_signals(signals)["checkpoints"] if c["label"] == "1m")
+    assert one_minute["count"] == 1
+    assert one_minute["avg"] == pytest.approx(0.5)
+
+
+def test_render_table_aligns_columns_without_box_drawing() -> None:
+    table = render_table(["A", "BB"], [["1", "22"], ["333", "4"]])
+    assert table.startswith("<pre>")
+    assert table.endswith("</pre>")
+    for forbidden in ("│", "┃", "┌", "└", "|"):
+        assert forbidden not in table
+
+
+def test_band_distance_atr_reports_signed_distance_from_the_lower_edge() -> None:
+    # lowerEntry = 1.39804, price 1.3981 -> tiny positive distance in ATR units
+    assert band_distance_atr(runtime()) == pytest.approx(0.0052, abs=0.001)
+    assert band_distance_atr(runtime(price=1.30)) < 0
+
+
+def test_band_distance_atr_is_none_without_a_band() -> None:
+    rt = runtime()
+    rt.entry_atr = None
+    assert band_distance_atr(rt) is None
+
+
+def completed_signal(**overrides) -> dict:
     base = {
         "symbol": "SOLUSDT",
         "side": "LONG",
+        "signalAt": NOW,
+        "signalPrice": 100.0,
         "measurementStatus": "COMPLETED",
+        "return1m": 0.1,
+        "return3m": 0.2,
+        "return5m": 0.15,
+        "return10m": 0.3,
+        "return15m": 0.28,
         "return20m": 0.2575,
         "MFE": 0.307,
         "MAE": -0.2278,
@@ -202,61 +279,67 @@ def measured(**overrides) -> dict:
     return {**base, **overrides}
 
 
-def test_summary_aggregates_the_path_metrics() -> None:
-    summary = summarize_signals([measured(), measured(MFE=0.5, MAE=-0.1, timeToMFE=600.0)])
-    assert summary["avg_mfe"] == pytest.approx(0.4035)
-    assert summary["avg_mae"] == pytest.approx(-0.1639)
-    assert summary["avg_time_to_mfe"] == pytest.approx(866.3)
-    assert summary["worst_mae"] == pytest.approx(-0.2278)
-    # Both signals dipped before they peaked.
-    assert summary["adverse_first"] == 2
+def test_completed_signal_block_shows_the_reconstructed_prices() -> None:
+    block = format_completed_signal_block(completed_signal())
+    assert "SOLUSDT" in block and "LONG" in block
+    assert "100" in block
+    assert "MFE +0.31%" in block
+    assert "MAE -0.23%" in block
+    assert "<pre>" in block
 
 
-def test_capture_is_the_share_of_the_peak_still_held_at_20_minutes() -> None:
-    summary = summarize_signals([measured(return20m=0.15, MFE=0.30)])
-    assert summary["capture"] == pytest.approx(0.5)
+def test_completed_signal_block_shows_dash_for_a_missing_checkpoint() -> None:
+    block = format_completed_signal_block(completed_signal(return15m=None))
+    lines = [l for l in block.split("\n") if l.strip().startswith("15m")]
+    assert len(lines) == 1
+    # Price and return both fall back to "-" when the checkpoint was never stored.
+    assert lines[0].split() == ["15m", "-", "-"]
 
 
-def test_capture_is_undefined_when_nothing_ever_moved_in_our_favour() -> None:
-    assert summarize_signals([measured(MFE=0.0, return20m=-0.1)])["capture"] is None
+def test_detail_messages_include_every_completed_signal() -> None:
+    signals = [completed_signal(symbol="A"), completed_signal(symbol="B", side="SHORT")]
+    messages = format_signal_detail_messages(signals)
+    joined = "\n".join(messages)
+    assert "A" in joined and "B" in joined
+    assert "SHORT" in joined
 
 
-def test_interpretation_reports_reach_and_drawdown() -> None:
-    text = " ".join(interpret_performance(summarize_signals([measured()] * 6)))
-    assert "+0.31%-ig jutottak" in text
-    assert "-0.23%-ot mentek ellened" in text
-    assert "18m 52s" in text  # 1132.6s, truncated by format_duration
+def test_detail_messages_exclude_active_and_interrupted() -> None:
+    signals = [
+        completed_signal(symbol="DONE"),
+        {**completed_signal(symbol="RUNNING"), "measurementStatus": "ACTIVE"},
+        {**completed_signal(symbol="GAP"), "measurementStatus": "INTERRUPTED"},
+    ]
+    joined = "\n".join(format_signal_detail_messages(signals))
+    assert "DONE" in joined
+    assert "RUNNING" not in joined
+    assert "GAP" not in joined
 
 
-def test_interpretation_flags_giving_back_most_of_the_move() -> None:
-    signals = [measured(return20m=0.05, MFE=0.60)] * 6
-    text = " ".join(interpret_performance(summarize_signals(signals)))
-    assert "visszaadták" in text
-    assert "20 perc hosszú ablaknak tűnik" in text
+def test_detail_messages_return_empty_list_without_completed_signals() -> None:
+    assert format_signal_detail_messages([{**completed_signal(), "measurementStatus": "ACTIVE"}]) == []
 
 
-def test_interpretation_praises_holding_the_peak() -> None:
-    signals = [measured(return20m=0.29, MFE=0.30)] * 6
-    text = " ".join(interpret_performance(summarize_signals(signals)))
-    assert "csúcs közelében zártak" in text
+def test_detail_messages_never_split_a_single_signal_block() -> None:
+    many = [completed_signal(symbol=f"SYM{i}") for i in range(40)]
+    messages = format_signal_detail_messages(many, limit=800, max_messages=40)
+    assert len(messages) > 1
+    for message in messages:
+        assert len(message) <= 900  # header + slack, never far over the limit
+    joined = "\n".join(messages)
+    for i in range(40):
+        assert f"SYM{i}" in joined
 
 
-def test_interpretation_warns_when_drawdown_exceeds_the_reach() -> None:
-    signals = [measured(return20m=-0.4, MFE=0.1, MAE=-0.9)] * 6
-    text = " ".join(interpret_performance(summarize_signals(signals)))
-    assert "nagyobb volt, mint az elért csúcs" in text
+def test_detail_messages_respect_the_telegram_size_limit() -> None:
+    many = [completed_signal(symbol=f"SYM{i}") for i in range(200)]
+    messages = format_signal_detail_messages(many)
+    for message in messages:
+        assert len(message) <= 4096
 
 
-def test_interpretation_says_when_the_sample_is_too_small_to_trust() -> None:
-    text = " ".join(interpret_performance(summarize_signals([measured()] * 2)))
-    assert "kevés minta" in text
-
-
-def test_no_interpretation_without_completed_measurements() -> None:
-    assert interpret_performance(summarize_signals([])) == []
-
-
-def test_status_message_includes_the_interpretation() -> None:
-    message = status_message(performance=summarize_signals([measured()] * 6))
-    assert "<b>Mit mutat</b>" in message
-    assert "jutottak" in message
+def test_detail_messages_cap_the_message_count_and_report_the_overflow() -> None:
+    many = [completed_signal(symbol=f"SYM{i}") for i in range(500)]
+    messages = format_signal_detail_messages(many, limit=500, max_messages=3)
+    assert len(messages) == 3
+    assert "további lefutás nem fért ki" in messages[-1]

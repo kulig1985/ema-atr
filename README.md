@@ -416,17 +416,25 @@ Tartalma: az elmult 24 ora signaljai (darabszam, LONG/SHORT bontas, atlagos 20 p
 hozam, nyeresges/veszteseges arany, legjobb es legrosszabb), symbolonkent az aktualis
 state es a savtol mert tavolsag ATR-ben, valamint a stream egeszseg es a loop lag.
 
-A **"Mit mutat"** blokk az MFE/MAE adatokat olvassa vissza magyarul: meddig jutottak
-atlagosan a signalok, mennyit mentek kozben ellened, mikor jott a csucs, es a csucsnak
-mekkora resze maradt meg a 20. percre (`capture` = atlagos `return20m` / atlagos `MFE`).
+Az **"Osszesitett lefutas"** `<pre>` tablazat a `COMPLETED` signalok checkpointonkenti
+atlagat mutatja (`1m`/`3m`/.../`20m`, atlag es +/- darabszam), alatta MFE atlag, MAE
+atlag es atlagos `timeToMFE`. Minden ertek a Mongo `signals` collectionbol jon,
+`measurementStatus == "COMPLETED"` dokumentumokbol.
 
-- `capture` >= 0,8 — a signalok a csucs kozeleben zartak
-- 0,4–0,8 — a csucs egy reszet visszaadtak
-- < 0,4 — a mozgas nagy reszet visszaadtak, a 20 perc hosszu ablaknak tunik
-- <= 0 — atlagosan vesztesegbe fordultak
+A **"Symbolok"** tablazat symbolonkent a valodi runtime state-et (`IDLE`, `LONG_ARMED`,
+`SHORT_ARMED`, `COOLDOWN`), az aktualis arat, a sav aljatol mert ATR tavolsagot (vagy
+COOLDOWN-nal a hatralevo idot), es a folyamatban levo meresek szamat mutatja.
 
-Ha az atlagos `MAE` abszolut erteke nagyobb az atlagos `MFE`-nel, kulon sor jelzi, hogy a
-belepesek korainak tunnek. Ot lemert signal alatt a blokk kiirja, hogy keves a minta.
+A digest utan kulon uzenet(ek)ben megy ki minden `COMPLETED` signal reszletes lefutasa:
+symbol, oldal, signal idopontja, `signalPrice`, majd checkpointonkent az ar es a return.
+Az ar **nem tarolt ertek** — a `signals` collection csak a `returnNm` szazalekokat
+tartalmazza, a checkpoint ar a `directional_return_pct` kepletebol van visszaszamolva a
+`signalPrice` alapjan. `ACTIVE` es `INTERRUPTED` signal nem kap reszletes tablazatot,
+csak a felso osszesitoben szamit bele a darabszamba.
+
+Telefonon keskeny marad: nincs Unicode keret, egy `<pre>` blokk se szeled, es egy signal
+tablazata soha nem torik ketto Telegram uzenet kozott. Ha tobb uzenetbe nem fer, a fejlec
+`(n/m)` szamozza oket, a legvegen egy sor jelzi, ha valamennyi lefutas mar nem fert ki.
 
 A `telegramStatusSec` **nem** azonos a `heartbeatSec`-kel: utobbi a Mongo `heartbeats`
 collectionbe ir, es nem kuld Telegram uzenetet.
