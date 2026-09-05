@@ -9,10 +9,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "_id": "strategy",
     "symbols": ["BTCUSDT", "ETHUSDT"],
     "entryTimeframe": "15m",
-    "exitTimeframe": "1h",
+    "exitTimeframe": "30m",
     "emaPeriod": 20,
     "atrPeriod": 14,
-    "xEntry": 1.75,
+    "xEntry": 1.85,
+    "reentryBufferAtr": 0.05,
+    "reentryHoldMs": 2000,
     "xExit": 1.75,
     "cvdLookback": 5,
     "maxSpreadBps": 10,
@@ -50,6 +52,8 @@ OVERRIDABLE_KEYS = {
     "emaPeriod",
     "atrPeriod",
     "xEntry",
+    "reentryBufferAtr",
+    "reentryHoldMs",
     "xExit",
     "cvdLookback",
     "maxSpreadBps",
@@ -178,12 +182,17 @@ def validate_config_document(document: dict[str, Any]) -> None:
 def validate_symbol_settings(symbol: str, settings: dict[str, Any]) -> None:
     interval_to_ms(str(settings["entryTimeframe"]))
     interval_to_ms(str(settings["exitTimeframe"]))
+
     if int(settings["emaPeriod"]) < 2:
         raise ValueError(f"{symbol}: emaPeriod must be >= 2")
     if int(settings["atrPeriod"]) < 2:
         raise ValueError(f"{symbol}: atrPeriod must be >= 2")
     if float(settings["xEntry"]) <= 0:
         raise ValueError(f"{symbol}: xEntry must be > 0")
+    if float(settings["reentryBufferAtr"]) < 0:
+        raise ValueError(f"{symbol}: reentryBufferAtr must be >= 0")
+    if int(settings["reentryHoldMs"]) < 0:
+        raise ValueError(f"{symbol}: reentryHoldMs must be >= 0")
     if float(settings["xExit"]) <= 0:
         raise ValueError(f"{symbol}: xExit must be > 0")
     if int(settings["cvdLookback"]) < 3:

@@ -227,6 +227,8 @@ class ShadowSignalApp:
             rt.entry_last_close_time = candle.close_time
             rt.entry_last_close_price = candle.close
             rt.previous_price = None
+            rt.reentry_pending = False
+            rt.reentry_since_ms = None
             changed = True
             logger.info(
                 "%s %s closed: EMA=%.8f ATR=%.8f lower=%.8f upper=%.8f",
@@ -331,11 +333,15 @@ class ShadowSignalApp:
         await self._update_outcomes(rt.symbol, price, trade_time_ms)
 
         now = datetime.now(UTC)
+
         if rt.state == "COOLDOWN":
             if rt.cooldown_until is not None and now >= rt.cooldown_until:
                 rt.state = "IDLE"
                 rt.cooldown_until = None
                 rt.previous_price = price
+                rt.reentry_pending = False
+                rt.reentry_since_ms = None
+
                 logger.info("%s cooldown finished -> IDLE", rt.symbol)
             else:
                 rt.previous_price = price
@@ -343,30 +349,170 @@ class ShadowSignalApp:
 
         if not self._indicator_data_aligned(rt, trade_time_ms):
             rt.previous_price = price
+            rt.reentry_pending = False
+            rt.reentry_since_ms = None
             return
 
         lower = rt.lower_entry
         upper = rt.upper_entry
-        if lower is None or upper is None:
+        atr = rt.entry_atr
+
+        if lower is None or upper is None or atr is None:
             rt.previous_price = price
+            rt.reentry_pending = False
+            rt.reentry_since_ms = None
             return
 
         previous = rt.previous_price
+
+        buffer_atr = float(rt.settings["reentryBufferAtr"])
+        hold_ms = int(rt.settings["reentryHoldMs"])
+
         if rt.state == "IDLE":
+            rt.reentry_pending = False
+            rt.reentry_since_ms = None
+
             if price < lower:
                 rt.state = "LONG_ARMED"
-                logger.info("%s -> LONG_ARMED at %.8f (lower %.8f)", rt.symbol, price, lower)
+                logger.info(
+                    "%s -> LONG_ARMED at %.8f (lower %.8f)",
+                    rt.symbol,
+                    price,
+                    lower,
+                )
+
             elif price > upper:
                 rt.state = "SHORT_ARMED"
-                logger.info("%s -> SHORT_ARMED at %.8f (upper %.8f)", rt.symbol, price, upper)
+                logger.info(
+                    "%s -> SHORT_ARMED at %.8f (upper %.8f)",
+                    rt.symbol,
+                    price,
+                    upper,
+                )
 
         elif rt.state == "LONG_ARMED":
-            if previous is not None and previous <= lower and price > lower:
-                await self._try_signal(rt, "LONG", price, trade_time_ms)
+            confirm_level = lower + buffer_atr * atr
+
+            if not rt.reentry_pending:
+                # Az ár alulról visszakeresztezte az alsó bandet.
+                if previous is not None and previous <= lower and price > lower:
+                    rt.reentry_pending = True
+                    rt.reentry_since_ms = None
+
+                    # Ha egyből elérte a bufferrel meghatározott
+                    # megerősítési szintet, elindítjuk az időmérést.
+                    if price >= confirm_level:
+                        rt.reentry_since_ms = trade_time_ms
+
+                        if hold_ms == 0:
+                            await self._try_signal(
+                                rt,
+                                "LONG",
+                                price,
+                                trade_time_ms,
+                            )
+                            rt.reentry_pending = False
+                            rt.reentry_since_ms = None
+
+            else:
+                # Visszaesett az alsó band alá:
+                # a mostani re-entry kísérlet megszakadt.
+                if price <= lower:
+                    rt.reentry_pending = False
+                    rt.reentry_since_ms = None
+
+                # Elérte / tartja a megerősítési szintet.
+                elif price >= confirm_level:
+                    if rt.reentry_since_ms is None:
+                        rt.reentry_since_ms = trade_time_ms
+
+                        if hold_ms == 0:
+                            await self._try_signal(
+                                rt,
+                                "LONG",
+                                price,
+                                trade_time_ms,
+                            )
+                            rt.reentry_pending = False
+                            rt.reentry_since_ms = None
+
+                    elif trade_time_ms - rt.reentry_since_ms >= hold_ms:
+                        await self._try_signal(
+                            rt,
+                            "LONG",
+                            price,
+                            trade_time_ms,
+                        )
+
+                        rt.reentry_pending = False
+                        rt.reentry_since_ms = None
+
+                # Már visszajött a banden belül,
+                # de nem maradt a confirm level fölött.
+                else:
+                    rt.reentry_since_ms = None
 
         elif rt.state == "SHORT_ARMED":
-            if previous is not None and previous >= upper and price < upper:
-                await self._try_signal(rt, "SHORT", price, trade_time_ms)
+            confirm_level = upper - buffer_atr * atr
+
+            if not rt.reentry_pending:
+                # Az ár felülről visszakeresztezte a felső bandet.
+                if previous is not None and previous >= upper and price < upper:
+                    rt.reentry_pending = True
+                    rt.reentry_since_ms = None
+
+                    # Ha egyből elérte a bufferrel meghatározott
+                    # megerősítési szintet, elindítjuk az időmérést.
+                    if price <= confirm_level:
+                        rt.reentry_since_ms = trade_time_ms
+
+                        if hold_ms == 0:
+                            await self._try_signal(
+                                rt,
+                                "SHORT",
+                                price,
+                                trade_time_ms,
+                            )
+                            rt.reentry_pending = False
+                            rt.reentry_since_ms = None
+
+            else:
+                # Visszament a felső band fölé:
+                # a mostani re-entry kísérlet megszakadt.
+                if price >= upper:
+                    rt.reentry_pending = False
+                    rt.reentry_since_ms = None
+
+                # Elérte / tartja a megerősítési szintet.
+                elif price <= confirm_level:
+                    if rt.reentry_since_ms is None:
+                        rt.reentry_since_ms = trade_time_ms
+
+                        if hold_ms == 0:
+                            await self._try_signal(
+                                rt,
+                                "SHORT",
+                                price,
+                                trade_time_ms,
+                            )
+                            rt.reentry_pending = False
+                            rt.reentry_since_ms = None
+
+                    elif trade_time_ms - rt.reentry_since_ms >= hold_ms:
+                        await self._try_signal(
+                            rt,
+                            "SHORT",
+                            price,
+                            trade_time_ms,
+                        )
+
+                        rt.reentry_pending = False
+                        rt.reentry_since_ms = None
+
+                # Már visszajött a banden belül,
+                # de nem maradt a confirm level alatt.
+                else:
+                    rt.reentry_since_ms = None
 
         rt.previous_price = price
 
@@ -579,16 +725,25 @@ class ShadowSignalApp:
         for rt in self.runtimes.values():
             if rt.state != "COOLDOWN":
                 rt.state = "IDLE"
+
             rt.previous_price = None
+            rt.reentry_pending = False
+            rt.reentry_since_ms = None
+
             rt.last_trade_event_ms = None
             rt.last_trade_received_at = None
+
             rt.vwap_bucket_start = None
             rt.vwap_notional_sum = 0.0
             rt.vwap_qty_sum = 0.0
             rt.candle_open = None
             rt.vwap_complete = False
+
             rt.flow_bucket = None
-            rt.cvd_deltas = deque(maxlen=int(rt.settings["cvdLookback"]))
+            rt.cvd_deltas = deque(
+                maxlen=int(rt.settings["cvdLookback"])
+            )
+
             rt.market_stream_continuous = False
 
     def _status_line(self, rt: SymbolRuntime) -> str:

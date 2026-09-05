@@ -124,6 +124,8 @@ class SymbolRuntime:
     exit_last_close_price: float | None = None
 
     previous_price: float | None = None
+    reentry_pending: bool = False
+    reentry_since_ms: int | None = None
     last_price: float | None = None
     last_trade_event_ms: int | None = None
     last_trade_received_at: float | None = None
