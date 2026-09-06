@@ -84,7 +84,7 @@ async def fetch_closed_klines(
     client: httpx.AsyncClient,
     symbol: str,
     interval: str,
-    limit: int = 500,
+    limit: int,
 ) -> list[Candle]:
     response = await client.get(
         f"{REST_BASE}/fapi/v1/klines",

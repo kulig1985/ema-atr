@@ -103,6 +103,7 @@ def format_signal_message(
         [
             f"{icon} <b>{html.escape(side)} · {html.escape(rt.symbol)}</b>",
             f"Ár <b>{shown_price}</b> · {signal_at:%H:%M:%S} UTC",
+            f"Entry <b>{entry_tf}</b> · Exit guideline <b>{exit_tf}</b>",
             "",
             "<b>Miért</b>",
             f"• Visszalépés: {crossing} ({format_price(band_edge)}, {crossed_pct:+.2f}%)",
@@ -205,10 +206,22 @@ def format_status_message(
     performance: dict[str, Any],
 ) -> str:
     """The periodic Telegram digest, in Hungarian."""
+    first_runtime = next(iter(runtimes.values()), None)
+
     lines = [
         "📊 <b>Shadow Signal állapot</b>",
         f"{now:%Y-%m-%d %H:%M} UTC · {format_duration(uptime_sec)} óta fut"
         f" · {len(runtimes)} symbol",
+    ]
+
+    if first_runtime is not None:
+        entry_tf = html.escape(str(first_runtime.settings["entryTimeframe"]))
+        exit_tf = html.escape(str(first_runtime.settings["exitTimeframe"]))
+        lines.append(
+            f"Entry <b>{entry_tf}</b> · Exit guideline <b>{exit_tf}</b>"
+        )
+
+    lines += [
         "",
         "<b>Elmúlt 24 óra</b>",
     ]
@@ -265,19 +278,45 @@ def format_status_message(
         if footer:
             lines.append(render_table(["", ""], footer))
 
-    lines += ["", "<b>Symbolok</b>"]
+    lines += ["", "<b>Symbolok · entry band</b>"]
     symbol_rows = []
+
     for symbol, rt in runtimes.items():
+        price = rt.last_price
+        lower = rt.lower_entry
+        upper = rt.upper_entry
+
         if rt.state == "COOLDOWN" and rt.cooldown_until is not None:
-            note = format_duration((rt.cooldown_until - now).total_seconds())
+            position = f"CD {format_duration((rt.cooldown_until - now).total_seconds())}"
+        elif price is None or lower is None or upper is None:
+            position = "-"
+        elif price < lower:
+            position = "alatta"
+        elif price > upper:
+            position = "felette"
         else:
-            distance = band_distance_atr(rt)
-            note = f"{distance:+.2f}" if distance is not None else "-"
+            position = "belül"
+
         measuring = active_measurements.get(symbol, 0)
+
         symbol_rows.append(
-            [symbol, rt.state, format_price(rt.last_price), note, str(measuring) if measuring else ""]
+            [
+                symbol,
+                rt.state,
+                format_price(price),
+                format_price(lower),
+                format_price(upper),
+                position,
+                str(measuring) if measuring else "",
+            ]
         )
-    lines.append(render_table(["Symbol", "State", "Ár", "Sáv", "M"], symbol_rows))
+
+    lines.append(
+        render_table(
+            ["Symbol", "State", "Ár", "Alja", "Teteje", "Helyzet", "M"],
+            symbol_rows,
+        )
+    )
 
     lines += [
         "",
@@ -301,6 +340,13 @@ def format_completed_signal_block(document: dict[str, Any]) -> str:
     signal_at = document.get("signalAt")
     icon = "🟢" if side == "LONG" else "🔴"
 
+    entry_tf = html.escape(
+        str((document.get("entry") or {}).get("timeframe", "?"))
+    )
+    exit_tf = html.escape(
+        str((document.get("exitGuideline") or {}).get("timeframe", "?"))
+    )
+
     rows = []
     for label, field in CHECKPOINTS:
         value = document.get(field)
@@ -316,15 +362,23 @@ def format_completed_signal_block(document: dict[str, Any]) -> str:
     lines = [
         f"{icon} <b>{html.escape(symbol)} {html.escape(side)}</b>",
         f"{signal_at:%Y-%m-%d %H:%M:%S} UTC" if signal_at else "időpont ismeretlen",
+        f"Entry <b>{entry_tf}</b> · Exit guideline <b>{exit_tf}</b>",
         f"Belépő ár: {format_price(signal_price)}",
         render_table(["Idő", "Ár", "Return"], rows),
     ]
 
     mfe, mae = document.get("MFE"), document.get("MAE")
     if mfe is not None:
-        lines.append(f"MFE {float(mfe):+.2f}% @ {format_duration(document.get('timeToMFE') or 0)}")
+        lines.append(
+            f"MFE {float(mfe):+.2f}% @ "
+            f"{format_duration(document.get('timeToMFE') or 0)}"
+        )
     if mae is not None:
-        lines.append(f"MAE {float(mae):+.2f}% @ {format_duration(document.get('timeToMAE') or 0)}")
+        lines.append(
+            f"MAE {float(mae):+.2f}% @ "
+            f"{format_duration(document.get('timeToMAE') or 0)}"
+        )
+
     return "\n".join(lines)
 
 

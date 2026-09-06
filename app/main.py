@@ -118,15 +118,16 @@ class ShadowSignalApp:
     async def _bootstrap_symbol(self, rt: SymbolRuntime) -> None:
         entry_tf = str(rt.settings["entryTimeframe"])
         exit_tf = str(rt.settings["exitTimeframe"])
+        kline_limit = int(self.config.document["klineLimit"])
         if entry_tf == exit_tf:
-            candles = await fetch_closed_klines(self.http, rt.symbol, entry_tf, limit=500)
+            candles = await fetch_closed_klines(self.http, rt.symbol, entry_tf, limit=kline_limit)
             await self.storage.save_candles([c.to_document() for c in candles])
             self._initialize_entry_indicators(rt, candles)
             self._initialize_exit_indicators(rt, candles)
         else:
             entry_candles, exit_candles = await asyncio.gather(
-                fetch_closed_klines(self.http, rt.symbol, entry_tf, limit=500),
-                fetch_closed_klines(self.http, rt.symbol, exit_tf, limit=500),
+                fetch_closed_klines(self.http, rt.symbol, entry_tf, limit=kline_limit),
+                fetch_closed_klines(self.http, rt.symbol, exit_tf, limit=kline_limit),
             )
             await self.storage.save_candles(
                 [c.to_document() for c in entry_candles] + [c.to_document() for c in exit_candles]
@@ -180,19 +181,20 @@ class ShadowSignalApp:
         rt.exit_last_close_price = last.close
 
     async def _resync_closed_candles(self) -> None:
+        kline_limit = int(self.config.document["klineLimit"])
         for rt in self.runtimes.values():
             entry_tf = str(rt.settings["entryTimeframe"])
             exit_tf = str(rt.settings["exitTimeframe"])
             if entry_tf == exit_tf:
-                candles = await fetch_closed_klines(self.http, rt.symbol, entry_tf, limit=500)
+                candles = await fetch_closed_klines(self.http, rt.symbol, entry_tf, limit=kline_limit)
                 missing = [c for c in candles if rt.entry_last_open_time is None or c.open_time > rt.entry_last_open_time]
                 for candle in missing:
                     await self._apply_closed_candle(rt, candle, persist=False)
                 await self.storage.save_candles([c.to_document() for c in missing])
             else:
                 entry_candles, exit_candles = await asyncio.gather(
-                    fetch_closed_klines(self.http, rt.symbol, entry_tf, limit=500),
-                    fetch_closed_klines(self.http, rt.symbol, exit_tf, limit=500),
+                    fetch_closed_klines(self.http, rt.symbol, entry_tf, limit=kline_limit),
+                    fetch_closed_klines(self.http, rt.symbol, exit_tf, limit=kline_limit),
                 )
                 missing_entry = [
                     c for c in entry_candles if rt.entry_last_open_time is None or c.open_time > rt.entry_last_open_time

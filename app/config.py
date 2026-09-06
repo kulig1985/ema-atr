@@ -10,6 +10,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "symbols": ["BTCUSDT", "ETHUSDT"],
     "entryTimeframe": "15m",
     "exitTimeframe": "30m",
+    "klineLimit": 100,
     "emaPeriod": 20,
     "atrPeriod": 14,
     "xEntry": 1.85,
@@ -46,6 +47,7 @@ GLOBAL_ONLY_KEYS = {
     "quoteAsset",
     "minQuoteVolume24h",
     "maxSymbols",
+    "klineLimit",
 }
 
 OVERRIDABLE_KEYS = {
@@ -167,6 +169,8 @@ def validate_config_document(document: dict[str, Any]) -> None:
         raise ValueError("minQuoteVolume24h must be >= 0")
     if int(document["maxSymbols"]) < 1:
         raise ValueError("maxSymbols must be >= 1")
+    if int(document["klineLimit"]) < 1:
+        raise ValueError("klineLimit must be >= 1")
     base = {
         key: document[key]
         for key in DEFAULT_CONFIG
