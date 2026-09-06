@@ -28,7 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "logStatusSec": 60,
     "symbolAutoPopulate": True,
     "quoteAsset": "USDT",
-    "minQuoteVolume24h": 300_000_000,
+    "minQuoteVolume24h": 350_000_000,
     "maxSymbols": 25,
     "updatedAt": None,
 }
