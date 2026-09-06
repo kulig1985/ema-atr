@@ -113,7 +113,32 @@ class ShadowSignalApp:
         interrupted = await self.storage.mark_stale_active_measurements_interrupted()
         if interrupted:
             logger.warning("Marked %d unfinished previous measurements as INTERRUPTED", interrupted)
-        await asyncio.gather(*(self._bootstrap_symbol(rt) for rt in self.runtimes.values()))
+        symbols = list(self.runtimes.keys())
+
+        results = await asyncio.gather(
+            *(self._bootstrap_symbol(self.runtimes[symbol]) for symbol in symbols),
+            return_exceptions=True,
+        )
+
+        for symbol, result in zip(symbols, results):
+            if result is None:
+                continue
+
+            if isinstance(result, RuntimeError) and "not enough closed" in str(result):
+                logger.warning("Skipping %s: %s", symbol, result)
+
+                self.runtimes.pop(symbol, None)
+                self.outcomes.pop(symbol, None)
+
+                if symbol in self.symbols:
+                    self.symbols.remove(symbol)
+
+                continue
+
+            raise result
+
+        if not self.symbols:
+            raise RuntimeError("No symbols with enough closed candles to initialize indicators")
 
     async def _bootstrap_symbol(self, rt: SymbolRuntime) -> None:
         entry_tf = str(rt.settings["entryTimeframe"])
@@ -155,8 +180,15 @@ class ShadowSignalApp:
     def _initialize_entry_indicators(self, rt: SymbolRuntime, candles: list[Candle]) -> None:
         period_ema = int(rt.settings["emaPeriod"])
         period_atr = int(rt.settings["atrPeriod"])
-        if len(candles) < max(period_ema, period_atr + 1):
-            raise RuntimeError(f"{rt.symbol}: not enough closed entry candles")
+
+        required = max(period_ema, period_atr + 1)
+
+        if len(candles) < required:
+            raise RuntimeError(
+                f"{rt.symbol}: not enough closed entry candles: "
+                f"got {len(candles)}, need {required}"
+            )
+
         rt.entry_ema = ema([c.close for c in candles], period_ema)
         rt.entry_atr = wilder_atr(
             [c.high for c in candles], [c.low for c in candles], [c.close for c in candles], period_atr
@@ -169,8 +201,13 @@ class ShadowSignalApp:
     def _initialize_exit_indicators(self, rt: SymbolRuntime, candles: list[Candle]) -> None:
         period_ema = int(rt.settings["emaPeriod"])
         period_atr = int(rt.settings["atrPeriod"])
-        if len(candles) < max(period_ema, period_atr + 1):
-            raise RuntimeError(f"{rt.symbol}: not enough closed exit candles")
+        required = max(period_ema, period_atr + 1)
+
+        if len(candles) < required:
+            raise RuntimeError(
+                f"{rt.symbol}: not enough closed exit candles: "
+                f"got {len(candles)}, need {required}"
+            )
         rt.exit_ema = ema([c.close for c in candles], period_ema)
         rt.exit_atr = wilder_atr(
             [c.high for c in candles], [c.low for c in candles], [c.close for c in candles], period_atr
