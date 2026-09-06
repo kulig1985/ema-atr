@@ -68,17 +68,26 @@ OVERRIDABLE_KEYS = {
 def interval_to_ms(interval: str) -> int:
     if len(interval) < 2:
         raise ValueError(f"Invalid timeframe: {interval}")
+
     unit = interval[-1]
+
     try:
         value = int(interval[:-1])
     except ValueError as exc:
         raise ValueError(f"Invalid timeframe: {interval}") from exc
+
     if value <= 0:
         raise ValueError(f"Invalid timeframe: {interval}")
+
     if unit == "m":
         return value * 60_000
+
     if unit == "h":
         return value * 3_600_000
+
+    if unit == "d":
+        return value * 86_400_000
+
     raise ValueError(f"Unsupported timeframe: {interval}")
 
 
